@@ -1,0 +1,44 @@
+name: CI/CD Pipeline
+
+on: push
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # This job should be removed during development.
+  example:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Echo something
+        run: echo "Addr development template CI/CD Pipeline"
+
+  # your_static_analysis:
+  #   uses: ./.github/workflows/static-analysis.yml
+  #   with:
+  #     lint_dir: "RELATIVE_PATH_TO_YOUR_LINT_DIR"
+  #     python_version: "3.11"
+
+  # your_unit_test:
+  #   needs: [your_static_analysis]
+  #   uses: ./.github/workflows/unit-tests.yml
+  #   with:
+  #     package_dir: "YOUR_PACKAGE_DIR"
+  #     test_dir: "RELATIVE_PATH_TO_YOUR_UNITTEST_DIR"
+  #     requirements_file: "RELATIVE_PATH_TO_YOUR_REQUIREMENTS_FILE"
+  #     python_version: "3.11"
+
+  # your_deploy:
+  #   needs: [your_unit_test, your_static_analysis]
+  #   uses: ./.github/workflows/deploy.yml
+  #   secrets:
+  #     AWS_ROLE_ARN_PROD: ${{ secrets.AWS_ROLE_ARN_PROD }}
+  #     AWS_ROLE_ARN_DEV: ${{ secrets.AWS_ROLE_ARN_DEV }}
+
+  # slack_notification:
+  #   needs: [your_static_analysis, your_unit_test, your_deploy]
+  #   if: ${{ failure() }}
+  #   uses: ./.github/workflows/slack-notification.yml
+  #   secrets:
+  #     ADDR_CICD_FAILURE_SLACK_WEBHOOK_URL: ${{ secrets.ADDR_CICD_FAILURE_SLACK_WEBHOOK_URL }}

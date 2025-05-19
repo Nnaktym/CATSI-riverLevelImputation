@@ -1,0 +1,75 @@
+name: Development pipeline for lambda-river-level-pred
+
+on:
+  workflow_dispatch:
+    inputs:
+      static_analysis:
+        description: "Run static analysis"
+        required: false
+        type: boolean
+      unit_test:
+        description: "Run unit tests"
+        required: false
+        type: boolean
+      deployment:
+        description: "Deploy the application"
+        required: false
+        type: boolean
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  print_inputs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print inputs
+        run: |
+          echo "Static analysis: ${{ github.event.inputs.static_analysis }}"
+          echo "Unit test: ${{ github.event.inputs.unit_test }}"
+          echo "Deployment: ${{ github.event.inputs.deployment }}"
+
+  # your_static_analysis:
+  #   if: ${{ github.event.inputs.static_analysis == 'true' }}
+  #   uses: ./.github/workflows/static-analysis.yml
+  #   with:
+  #     lint_dir: "RELATIVE_PATH_TO_YOUR_LINT_DIR"
+  #     python_version: "3.11"
+
+  # your_unit_test:
+  #   if: ${{ github.event.inputs.unit_test == 'true' }}
+  #   uses: ./.github/workflows/unit-tests.yml
+  #   with:
+  #     package_dir: "YOUR_PACKAGE_DIR"
+  #     test_dir: "RELATIVE_PATH_TO_YOUR_UNITTEST_DIR"
+  #     requirements_file: "RELATIVE_PATH_TO_YOUR_REQUIREMENTS_FILE"
+  #     python_version: "3.11"
+
+  # your_deploy:
+  #   if: ${{ github.event.inputs.deployment == 'true' }}
+  #   uses: ./.github/workflows/deploy.yml
+  #   secrets:
+  #     AWS_ROLE_ARN_PROD: ${{ secrets.AWS_ROLE_ARN_PROD }}
+  #     AWS_ROLE_ARN_DEV: ${{ secrets.AWS_ROLE_ARN_DEV }}
+
+  # static_analysis_slack_notification:
+  #   needs: [your_static_analysis]
+  #   if: ${{ failure() && github.event.inputs.static_analysis == 'true'}}
+  #   uses: ./.github/workflows/slack-notification.yml
+  #   secrets:
+  #     ADDR_CICD_FAILURE_SLACK_WEBHOOK_URL: ${{ secrets.ADDR_CICD_FAILURE_SLACK_WEBHOOK_URL }}
+
+  # unit_test_slack_notification:
+  #   needs: [your_unit_test]
+  #   if: ${{ failure() && github.event.inputs.unit_test == 'true'}}
+  #   uses: ./.github/workflows/slack-notification.yml
+  #   secrets:
+  #     ADDR_CICD_FAILURE_SLACK_WEBHOOK_URL: ${{ secrets.ADDR_CICD_FAILURE_SLACK_WEBHOOK_URL }}
+
+  # deploy_slack_notification:
+  #   needs: [your_deploy]
+  #   if: ${{ failure() && github.event.inputs.deployment == 'true'}}
+  #   uses: ./.github/workflows/slack-notification.yml
+  #   secrets:
+  #     ADDR_CICD_FAILURE_SLACK_WEBHOOK_URL: ${{ secrets.ADDR_CICD_FAILURE_SLACK_WEBHOOK_URL }}

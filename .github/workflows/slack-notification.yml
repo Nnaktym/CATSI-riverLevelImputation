@@ -1,0 +1,46 @@
+name: Reusable workflow for Slack notification
+
+on:
+  workflow_call:
+    secrets:
+      ADDR_CICD_FAILURE_SLACK_WEBHOOK_URL:
+        required: true
+
+jobs:
+  static-code-analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Notify slack when job failed
+        uses: slackapi/slack-github-action@v1.24.0
+        id: slack
+        with:
+          payload: |
+            {
+              "text": "GitHub Action WorkFlow failure:\n${{ github.event.repository.url }}/actions/runs/${{ github.run_id }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "GitHub Action WorkFlow failure:\n${{ github.event.repository.url }}/actions/runs/${{ github.run_id }}"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Repository:*\n${{ github.event.repository.url }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Author:*\n<https://github.com/${{ github.event.sender.login }}|@${{ github.event.sender.login }}>"
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.ADDR_CICD_FAILURE_SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

@@ -1,0 +1,17 @@
+{
+  "recommendations": [
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "esbenp.prettier-vscode",
+    "ms-python.mypy-type-checker",
+    "davidanson.vscode-markdownlint",
+    "njpwerner.autodocstring",
+    "charliermarsh.ruff",
+    "streetsidesoftware.code-spell-checker"
+  ],
+  "unwantedRecommendations": [
+    // black and flake8 are not needed if you use ruff
+    "ms-python.black-formatter",
+    "ms-python.flake8"
+  ]
+}

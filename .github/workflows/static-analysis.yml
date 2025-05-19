@@ -1,0 +1,44 @@
+name: Reusable workflow for linting
+
+on:
+  workflow_call:
+    inputs:
+      lint_dir:
+        description: "Path to the directory to lint"
+        required: true
+        type: string
+      python_version:
+        description: "Python version to use"
+        required: true
+        type: string
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ inputs.python_version }}
+      - name: Install dependencies
+        run: |
+          # Install ruff mypy and stub libs
+          python -m pip install --upgrade pip
+          pip install -r requirements-lint.txt
+      - name: Lint with ruff
+        run: |
+          ruff check ${{ inputs.lint_dir }}
+      - name: Lint with mypy
+        run: |
+          mypy ${{ inputs.lint_dir }}
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+      - name: Install cspell
+        run: |
+          npm install -g cspell
+      - name: Spell check with cspell
+        run: |
+          cspell ${{ inputs.lint_dir }}**/*.* --no-summary --no-progress

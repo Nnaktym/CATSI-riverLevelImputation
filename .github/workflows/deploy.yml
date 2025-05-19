@@ -1,0 +1,51 @@
+name: Reusable workflow for deploy AWS resources
+
+on:
+  workflow_call:
+    secrets:
+      AWS_ROLE_ARN_DEV:
+        required: true
+      AWS_ROLE_ARN_PROD:
+        required: true
+
+env:
+  # If it's a deployment for the development environment only, please remove the conditional statement.
+  DEPLOY_STAGE: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
+  AWS_ROLE_ARN: ${{ github.ref == 'refs/heads/main' && secrets.AWS_ROLE_ARN_PROD || secrets.AWS_ROLE_ARN_DEV}}
+  AWS_REGION: ap-northeast-1
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: checkout repository
+        uses: actions/checkout@v4
+
+      - name: install node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Setup dependencies
+        run: |
+          cd cdk
+          npm ci
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-duration-seconds: 3600
+          role-session-name: "GitHubActionSession"
+
+      - name: Set environment variables
+        run: |
+          export SYSTEM_ENV=${{ env.DEPLOY_STAGE }}
+          # Please set your other environment variables
+
+      - name: Deploy
+        run: |
+          cd cdk
+          npx cdk deploy --require-approval never
