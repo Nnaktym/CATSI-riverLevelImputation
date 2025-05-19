@@ -1,0 +1,301 @@
+"""
+Implementation of the CATSI (Context-Aware Time Series Imputation) model.
+"""
+
+import argparse
+import os
+import pickle
+import sys
+from datetime import date
+from pathlib import Path
+from socket import gethostname
+from typing import Any
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import torch
+import torch.optim as optim
+import tqdm
+
+sys.path.append(os.path.join(os.path.dirname(__file__), "."))
+from catsi_model import CATSI
+from catsi_utils import AverageMeter, TimeSeriesDataSet, build_data_loader
+from torch.nn.utils import clip_grad_norm_
+
+
+class ContAwareTimeSeriesImp(object):
+    """Continuous-Aware Time Series Imputation"""
+
+    def __init__(
+        self,
+        var_names: list[str],
+        train_data: Any,
+        val_data: Any,
+        out_path: str,
+        window_size: int,
+        valid_size: float = 0.2,  # validation size ...?
+        device: torch.device | None = None,
+    ):
+        # set params
+        self.out_path = (
+            Path(out_path) / f"{date.today():%Y%m%d}-CATSI-{gethostname()}-{os.getpid()}"
+        )
+        if not self.out_path.is_dir():
+            self.out_path.mkdir()
+        self.var_names = var_names
+        self.var_names_dict = {i: item for i, item in enumerate(var_names)}
+        self.num_vars = len(var_names)
+        self.window_size = window_size
+
+        # load data
+        self.train_set = TimeSeriesDataSet(train_data)
+        self.valid_set = TimeSeriesDataSet(val_data)
+
+        # create model
+        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = CATSI(len(var_names), window_size).to(self.device)
+
+    def fit(
+        self,
+        epochs: int = 300,
+        batch_size: int = 64,
+        eval_batch_size: int = 64,
+        eval_epoch: int = 1,
+        learning_rate: float = 1e-3,
+        early_stop: bool = False,
+        patience: int = 4,  # Number of epochs to wait for improvement
+    ) -> None:
+        # construct optimizer
+        context_rnn_params = {
+            "params": self.model.context_rnn.parameters(),
+            "lr": learning_rate,
+            "weight_decay": 5e-3,
+        }
+        imp_rnn_params = {
+            "params": [
+                p[1] for p in self.model.named_parameters() if p[0].split(".")[0] != "context_rnn"
+            ],
+            "lr": learning_rate,
+            "weight_decay": 5e-5,
+        }
+        optimizer = optim.Adam([context_rnn_params, imp_rnn_params])
+
+        train_iter = build_data_loader(self.train_set, self.device, batch_size, shuffle=False)
+        valid_iter = build_data_loader(self.valid_set, self.device, eval_batch_size, shuffle=False)
+        self.eval_batch_size = eval_batch_size
+
+        best_val_loss = float("inf")
+        patience_counter = 0
+
+        for epoch in range(epochs):
+            self.model.train()
+
+            pbar_desc = f"Epoch {epoch+1}: "
+            pbar = tqdm.tqdm(total=len(train_iter), desc=pbar_desc)
+
+            total_loss = AverageMeter()
+            total_loss_eval = AverageMeter()
+            for _, data in enumerate(train_iter):
+                optimizer.zero_grad()
+                ret = self.model(data)
+                clip_grad_norm_(self.model.parameters(), 1)
+                ret["loss"].backward()
+                optimizer.step()
+
+                total_loss.update(ret["loss"].item(), ret["loss_count"].item())
+                total_loss_eval.update(ret["loss_eval"].item(), ret["loss_eval_count"].item())
+
+                pbar.set_description(pbar_desc + f"Training loss={total_loss.avg:.3e}")
+                pbar.update()
+            pbar_desc = f"Epoch {epoch + 1} done, Training loss={total_loss.avg:.3e}"
+            pbar.set_description(pbar_desc)
+            pbar.close()
+
+            if (epoch + 1) % eval_epoch == 0:
+                self.evaluate(valid_iter)
+
+            # Validation phase
+            self.model.eval()
+            val_loss, _, _, _ = self.evaluate(valid_iter, print_scores=False)
+
+            # Early stopping check
+            if early_stop:
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+                    if patience_counter >= patience:
+                        print(f"Early stopping triggered after {epoch + 1} epochs")
+                        break
+
+            print(f"Epoch {epoch + 1}/{epochs}")
+            print(f"Training Loss: {total_loss.avg:.4f}")
+            print(f"Validation Loss: {val_loss:.4f}")
+            print("-" * 50)
+
+        print("Training is done, performing final evaluation on validation set...")
+
+        loss_valid, mae, mre, nrmsd = self.evaluate(valid_iter)
+        with open(self.out_path / "final_eval.csv", "w") as txtfile:
+            txtfile.write(f"Metrics, " + (", ".join(self.var_names)) + "\n")
+            txtfile.write(f"MAE, " + (", ".join([f"{x:.3f}" for x in mae])) + "\n")
+            txtfile.write(f"MRE, " + (", ".join([f"{x:.3f}" for x in mre])) + "\n")
+            txtfile.write(f"nRMSD, " + (", ".join([f"{x:.3f}" for x in nrmsd])) + "\n")
+
+    def evaluate(
+        self,
+        data_iter: Any,
+        print_scores: bool = True,
+    ) -> tuple[float, list[float], list[float], list[float]]:
+        """Evaluate the model on the validation set."""
+        self.model.eval()
+
+        mae = [AverageMeter() for _ in range(self.num_vars)]
+        mre = [AverageMeter() for _ in range(self.num_vars)]
+        nrmsd = [AverageMeter() for _ in range(self.num_vars)]
+        loss_valid = AverageMeter()
+
+        for idx, data in enumerate(data_iter):
+            eval_masks = data["eval_masks"]
+            eval_ = data["evals"]
+
+            ret = self.model(data)
+            imputation = ret["imputations"]
+            loss_valid.update(ret["loss"], ret["loss_count"])
+
+            abs_err = (eval_masks * (eval_ - imputation).abs()).sum(dim=[0, 1]) / eval_masks.sum(
+                dim=[0, 1]
+            )
+            rel_err = (eval_masks * (eval_ - imputation).abs() / eval_.clamp(min=1e-5)).sum(
+                dim=[0, 1]
+            ) / eval_masks.sum(dim=[0, 1])
+            [mae[i].update(abs_err[i], eval_.shape[0]) for i in range(self.num_vars)]
+            [mre[i].update(rel_err[i], eval_.shape[0]) for i in range(self.num_vars)]
+
+            range_norm = 1  # max_vals - min_vals
+            nsd = eval_masks * (eval_ - imputation).abs() / range_norm
+            for i, (nsd_val, nsd_num) in enumerate(
+                zip((nsd.norm(dim=[0, 1]) ** 2).tolist(), eval_masks.sum(dim=[0, 1]).tolist()),
+            ):
+                if nsd_num > 0:
+                    nrmsd[i].update(nsd_val / nsd_num, nsd_num)
+                else:
+                    nrmsd[i].update(0.0, 1)
+
+        mae = [x.avg for x in mae]
+        mre = [x.avg for x in mre]
+        nrmsd = [x.avg**0.5 for x in nrmsd]
+
+        if print_scores:
+            print("   MAE = " + ("\t".join([f"{x:.3f}" for x in mae])))
+            print("   MRE = " + ("\t".join([f"{x:.3f}" for x in mre])))
+            print(" nRMSD = " + ("\t".join([f"{x:.3f}" for x in nrmsd])))
+            print()
+
+        return loss_valid.avg, mae, mre, nrmsd
+
+    def retrieve_imputation(
+        self,
+        data_iter: torch.utils.data.DataLoader,
+        epoch: int,
+        colname: str = "imp",
+    ) -> pd.DataFrame:
+        """Retrieve imputation results from the model."""
+        self.model.eval()
+        imp_dfs = []
+        for _, data in enumerate(data_iter):
+            # print(data)
+            # dict_keys(['values', 'masks', 'deltas', 'time_stamps', 'lengths', 'pids', 'evals', 'eval_masks'])
+            eval_masks = data["eval_masks"]  # this is applied to the synthetic missing data
+            eval_ = data["evals"]  # this is ground truth
+
+            ret = self.model(data)
+            # dict_keys(['loss', 'verbose_loss', 'loss_count', 'imputations', 'feat_imp', 'hist_imp'])
+            imputation = ret["imputations"]  # imputation results ( for the synthetic missing data)
+
+            pids = data["pids"]  # patient ids
+            imp_df = pd.DataFrame(  # shows the position of the data where eval_mask is non-zero
+                eval_masks.nonzero().data.cpu().numpy(), columns=["pid", "tid", "colid"]
+            )
+            # meaning, pid should be consecutive? -> no here it is converting
+            imp_df["pid"] = imp_df["pid"].map({i: pid for i, pid in enumerate(pids)})
+            imp_df["epoch"] = epoch
+            imp_df["analyte"] = imp_df["colid"].map(self.var_names_dict)
+            # analyte is a term of biochemistry, referring to a substance or component that is being measured or analyzed in a sample.
+            imp_df[colname] = imputation[eval_masks == 1].data.cpu().numpy()
+            imp_df[colname + "_feat"] = ret["feat_imp"][eval_masks == 1].data.cpu().numpy()
+            # This column stores the feature-based imputed values (ret["feat_imp"]) for the evaluation points.
+            # Feature-based imputations are derived from relationships between features, independent of temporal dependencies.
+            # Yes, ret["feat_imp"] does not directly involve LSTM-related operations. Instead, it is computed using the self.feature_impute method, which is likely a Multi-Layer Perceptron (MLP) or another feedforward neural network. This method processes x_complement, which contains imputed values and other features, to generate feature-based imputations. Unlike ret["rnn_imp"], which relies on LSTM hidden states, ret["feat_imp"] focuses on feature-level relationships and does not utilize temporal dependencies modeled by LSTMs.
+            imp_df[colname + "_hist"] = ret["hist_imp"][eval_masks == 1].data.cpu().numpy()
+            # This column stores the historical imputed values (ret["hist_imp"]) for the evaluation points.
+            # Historical imputations are derived from temporal patterns in the data, leveraging past observations.
+            # Yes, ret["hist_imp"] involves LSTM-related operations. It is computed using the hidden states from the bidirectional LSTM (hiddens_forward and hiddens_backward). These hidden states capture temporal dependencies in the data, as they are generated by processing the time series in both forward and backward directions using LSTM cells. The concatenated hidden states are passed through a layer (e.g., self.recurrent_impute) to produce the historical imputations (ret["hist_imp"]). This makes ret["hist_imp"] directly dependent on the LSTM's ability to model temporal patterns.
+
+            imp_df["ground_truth"] = eval_[eval_masks == 1].data.cpu().numpy()
+            imp_dfs.append(imp_df)
+        if not imp_dfs:
+            raise ValueError(
+                "No valid data frames were generated during imputation retrieval. Check the input data or conditions in the loop."
+            )
+        imp_dfs = pd.concat(imp_dfs, axis=0).set_index(["pid", "tid", "analyte", "ground_truth"])
+        return imp_dfs
+
+    def impute_test_set(
+        self,
+        data_set: Any,
+        batch_size: int | None = None,
+        ground_truth: bool = True,
+    ) -> list[pd.DataFrame]:
+        """Impute the test set using the trained model."""
+        batch_size = batch_size or self.eval_batch_size
+        if ground_truth:
+            data_iter = build_data_loader(data_set, self.device, batch_size, False, testing=False)
+        else:
+            data_iter = build_data_loader(data_set, self.device, batch_size, False, testing=True)
+        self.model.eval()
+
+        out_dir = self.out_path / "imputations_test_set"
+        out_dir.mkdir(exist_ok=True)
+
+        imp_dfs = []
+        pbar = tqdm.tqdm(desc="Generating imputation", total=len(data_iter))
+        for _, data in enumerate(data_iter):
+            if ground_truth:
+                missing_masks = np.maximum(data["eval_masks"], 1 - data["masks"])
+            else:
+                missing_masks = 1 - data["masks"]
+            # this is observation mask. if observed value is recorded, masks should be 1.
+            # in test case, we want to impute actual missing values
+            # so, we need to change masks values when time series data creation for test set
+            ret = self.model(data)
+            imputation = ret["imputations"]
+
+            pids = data["pids"]
+            imp_df = pd.DataFrame(
+                missing_masks.nonzero().data.cpu().numpy(), columns=["pid", "tid", "colid"]
+            )
+            imp_df["pid"] = imp_df["pid"].map({i: pid for i, pid in enumerate(pids)})
+            imp_df["analyte"] = imp_df["colid"].map(self.var_names_dict)
+            imp_df["imputation"] = imputation[missing_masks == 1].data.cpu().numpy()
+            if ground_truth:
+                imp_df["ground_truth"] = data["evals"][missing_masks == 1].numpy()
+            imp_dfs.append(imp_df)
+            # actual value is not recorded because it is test set
+
+            for p in range(len(pids)):
+                seq_len = data["lengths"][p]
+                time_stamps = data["time_stamps"][p, :seq_len].unsqueeze(1)
+                imp = imputation[p, :seq_len, :]
+                df = pd.DataFrame(
+                    torch.cat([time_stamps, imp], dim=1).data.cpu().numpy(),
+                    columns=["CHARTTIME"] + self.var_names,
+                )
+                df["CHARTTIME"] = df["CHARTTIME"].apply(int)
+                df.to_csv(out_dir / f"{pids[p]}.csv", index=False)
+            pbar.update()
+        pbar.close()
+        print(f"Done, results saved in:\n {out_dir.resolve()}")
+        return imp_dfs
