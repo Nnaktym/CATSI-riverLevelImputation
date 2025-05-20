@@ -17,6 +17,9 @@ from torch.nn.utils import clip_grad_norm_
 from catsi.model import CATSI
 from catsi.utils import AverageMeter, TimeSeriesDataSet, build_data_loader
 
+logger = logging.getLogger("CATSI")
+logger.setLevel(logging.INFO)
+
 
 class ContAwareTimeSeriesImp(object):
     """Continuous-Aware Time Series Imputation"""
@@ -251,14 +254,11 @@ class ContAwareTimeSeriesImp(object):
 
         imp_dfs = []
         pbar = tqdm.tqdm(desc="Generating imputation", total=len(data_iter))
-        for _, data in enumerate(data_iter):
-            if ground_truth:
-                # missing_masks = np.maximum(data["eval_masks"], 1 - data["masks"])
-                missing_masks = 1 - data["masks"]
-            else:
-                missing_masks = 1 - data["masks"]
+        for i, data in enumerate(data_iter):
+            missing_masks = 1 - data["masks"]
             ret = self.model(data)
             imputation = ret["imputations"]
+            data_set[i]["imputation"] = imputation
 
             pids = data["pids"]
             imp_df = pd.DataFrame(
