@@ -2,26 +2,23 @@
 Implementation of the CATSI (Context-Aware Time Series Imputation) model.
 """
 
-import argparse
+import logging
 import os
-import pickle
-import sys
 from datetime import date
 from pathlib import Path
 from socket import gethostname
 from typing import Any
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
 import torch.optim as optim
 import tqdm
-
-sys.path.append(os.path.join(os.path.dirname(__file__), "."))
-from catsi_model import CATSI
-from catsi_utils import AverageMeter, TimeSeriesDataSet, build_data_loader
+from model import CATSI
 from torch.nn.utils import clip_grad_norm_
+from utils import AverageMeter, TimeSeriesDataSet, build_data_loader
+
+logger = logging.getLogger("catsi")
 
 
 class ContAwareTimeSeriesImp(object):
@@ -34,7 +31,6 @@ class ContAwareTimeSeriesImp(object):
         val_data: Any,
         out_path: str,
         window_size: int,
-        valid_size: float = 0.2,  # validation size ...?
         device: torch.device | None = None,
     ):
         # set params
@@ -65,6 +61,7 @@ class ContAwareTimeSeriesImp(object):
         learning_rate: float = 1e-3,
         early_stop: bool = False,
         patience: int = 4,  # Number of epochs to wait for improvement
+        shuffle: bool = False,
     ) -> None:
         # construct optimizer
         context_rnn_params = {
@@ -81,13 +78,16 @@ class ContAwareTimeSeriesImp(object):
         }
         optimizer = optim.Adam([context_rnn_params, imp_rnn_params])
 
-        train_iter = build_data_loader(self.train_set, self.device, batch_size, shuffle=False)
-        valid_iter = build_data_loader(self.valid_set, self.device, eval_batch_size, shuffle=False)
+        train_iter = build_data_loader(self.train_set, self.device, batch_size, shuffle=shuffle)
+        valid_iter = build_data_loader(
+            self.valid_set, self.device, eval_batch_size, shuffle=shuffle
+        )
         self.eval_batch_size = eval_batch_size
 
         best_val_loss = float("inf")
         patience_counter = 0
 
+        # Training phase
         for epoch in range(epochs):
             self.model.train()
 
@@ -127,22 +127,16 @@ class ContAwareTimeSeriesImp(object):
                 else:
                     patience_counter += 1
                     if patience_counter >= patience:
-                        print(f"Early stopping triggered after {epoch + 1} epochs")
+                        logger.info(f"Early stopping triggered after {epoch + 1} epochs")
                         break
 
-            print(f"Epoch {epoch + 1}/{epochs}")
-            print(f"Training Loss: {total_loss.avg:.4f}")
-            print(f"Validation Loss: {val_loss:.4f}")
-            print("-" * 50)
+            logger.info(f"Epoch {epoch + 1}/{epochs}")
+            logger.info(f"Training Loss: {total_loss.avg:.4f}")
+            logger.info(f"Validation Loss: {val_loss:.4f}")
+            logger.info("-" * 50)
 
-        print("Training is done, performing final evaluation on validation set...")
-
-        loss_valid, mae, mre, nrmsd = self.evaluate(valid_iter)
-        with open(self.out_path / "final_eval.csv", "w") as txtfile:
-            txtfile.write(f"Metrics, " + (", ".join(self.var_names)) + "\n")
-            txtfile.write(f"MAE, " + (", ".join([f"{x:.3f}" for x in mae])) + "\n")
-            txtfile.write(f"MRE, " + (", ".join([f"{x:.3f}" for x in mre])) + "\n")
-            txtfile.write(f"nRMSD, " + (", ".join([f"{x:.3f}" for x in nrmsd])) + "\n")
+        logger.info("Training is done.")
+        logger.info(f"Best validation loss: {best_val_loss:.4f}")
 
     def evaluate(
         self,
@@ -189,10 +183,9 @@ class ContAwareTimeSeriesImp(object):
         nrmsd = [x.avg**0.5 for x in nrmsd]
 
         if print_scores:
-            print("   MAE = " + ("\t".join([f"{x:.3f}" for x in mae])))
-            print("   MRE = " + ("\t".join([f"{x:.3f}" for x in mre])))
-            print(" nRMSD = " + ("\t".join([f"{x:.3f}" for x in nrmsd])))
-            print()
+            logger.info("   MAE = " + ("\t".join([f"{x:.3f}" for x in mae])))
+            logger.info("   MRE = " + ("\t".join([f"{x:.3f}" for x in mre])))
+            logger.info(" nRMSD = " + ("\t".join([f"{x:.3f}" for x in nrmsd])))
 
         return loss_valid.avg, mae, mre, nrmsd
 
@@ -206,39 +199,28 @@ class ContAwareTimeSeriesImp(object):
         self.model.eval()
         imp_dfs = []
         for _, data in enumerate(data_iter):
-            # print(data)
-            # dict_keys(['values', 'masks', 'deltas', 'time_stamps', 'lengths', 'pids', 'evals', 'eval_masks'])
-            eval_masks = data["eval_masks"]  # this is applied to the synthetic missing data
-            eval_ = data["evals"]  # this is ground truth
+            eval_masks = data["eval_masks"]
+            eval_ = data["evals"]
 
             ret = self.model(data)
-            # dict_keys(['loss', 'verbose_loss', 'loss_count', 'imputations', 'feat_imp', 'hist_imp'])
-            imputation = ret["imputations"]  # imputation results ( for the synthetic missing data)
+            imputation = ret["imputations"]
 
-            pids = data["pids"]  # patient ids
-            imp_df = pd.DataFrame(  # shows the position of the data where eval_mask is non-zero
+            pids = data["pids"]
+            imp_df = pd.DataFrame(
                 eval_masks.nonzero().data.cpu().numpy(), columns=["pid", "tid", "colid"]
             )
-            # meaning, pid should be consecutive? -> no here it is converting
             imp_df["pid"] = imp_df["pid"].map({i: pid for i, pid in enumerate(pids)})
             imp_df["epoch"] = epoch
             imp_df["analyte"] = imp_df["colid"].map(self.var_names_dict)
-            # analyte is a term of biochemistry, referring to a substance or component that is being measured or analyzed in a sample.
             imp_df[colname] = imputation[eval_masks == 1].data.cpu().numpy()
             imp_df[colname + "_feat"] = ret["feat_imp"][eval_masks == 1].data.cpu().numpy()
-            # This column stores the feature-based imputed values (ret["feat_imp"]) for the evaluation points.
-            # Feature-based imputations are derived from relationships between features, independent of temporal dependencies.
-            # Yes, ret["feat_imp"] does not directly involve LSTM-related operations. Instead, it is computed using the self.feature_impute method, which is likely a Multi-Layer Perceptron (MLP) or another feedforward neural network. This method processes x_complement, which contains imputed values and other features, to generate feature-based imputations. Unlike ret["rnn_imp"], which relies on LSTM hidden states, ret["feat_imp"] focuses on feature-level relationships and does not utilize temporal dependencies modeled by LSTMs.
             imp_df[colname + "_hist"] = ret["hist_imp"][eval_masks == 1].data.cpu().numpy()
-            # This column stores the historical imputed values (ret["hist_imp"]) for the evaluation points.
-            # Historical imputations are derived from temporal patterns in the data, leveraging past observations.
-            # Yes, ret["hist_imp"] involves LSTM-related operations. It is computed using the hidden states from the bidirectional LSTM (hiddens_forward and hiddens_backward). These hidden states capture temporal dependencies in the data, as they are generated by processing the time series in both forward and backward directions using LSTM cells. The concatenated hidden states are passed through a layer (e.g., self.recurrent_impute) to produce the historical imputations (ret["hist_imp"]). This makes ret["hist_imp"] directly dependent on the LSTM's ability to model temporal patterns.
 
             imp_df["ground_truth"] = eval_[eval_masks == 1].data.cpu().numpy()
             imp_dfs.append(imp_df)
         if not imp_dfs:
             raise ValueError(
-                "No valid data frames were generated during imputation retrieval. Check the input data or conditions in the loop."
+                "No valid data frames. Check the input data or conditions in the loop."
             )
         imp_dfs = pd.concat(imp_dfs, axis=0).set_index(["pid", "tid", "analyte", "ground_truth"])
         return imp_dfs
@@ -267,9 +249,6 @@ class ContAwareTimeSeriesImp(object):
                 missing_masks = np.maximum(data["eval_masks"], 1 - data["masks"])
             else:
                 missing_masks = 1 - data["masks"]
-            # this is observation mask. if observed value is recorded, masks should be 1.
-            # in test case, we want to impute actual missing values
-            # so, we need to change masks values when time series data creation for test set
             ret = self.model(data)
             imputation = ret["imputations"]
 
@@ -283,7 +262,6 @@ class ContAwareTimeSeriesImp(object):
             if ground_truth:
                 imp_df["ground_truth"] = data["evals"][missing_masks == 1].numpy()
             imp_dfs.append(imp_df)
-            # actual value is not recorded because it is test set
 
             for p in range(len(pids)):
                 seq_len = data["lengths"][p]
@@ -297,5 +275,5 @@ class ContAwareTimeSeriesImp(object):
                 df.to_csv(out_dir / f"{pids[p]}.csv", index=False)
             pbar.update()
         pbar.close()
-        print(f"Done, results saved in:\n {out_dir.resolve()}")
+        logger.info(f"Done, results saved in:\n {out_dir.resolve()}")
         return imp_dfs

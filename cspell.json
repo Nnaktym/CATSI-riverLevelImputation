@@ -5,19 +5,23 @@
     "mypy",
     "venv",
     "pytest",
-    // Example: README.md exclude words
-    // When you copy it to the development repository, please delete it.
+    "catsi",
     "cicd",
+    "stdv",
     "autodocstring",
     "charliermarsh",
     "davidanson",
     "esbenp",
+    "gethostname",
+    "hiddens",
     "njpwerner",
+    "pbar",
     "pycodestyle",
     "pyflakes",
     "Pylance",
     "pyproject",
-    "tamasfe"
+    "tamasfe",
+    "x.avg"
   ],
   "flagWords": [],
   "ignorePaths": ["requirements*"]

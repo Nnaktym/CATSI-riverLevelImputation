@@ -85,8 +85,13 @@ class CatsiDataset(object):
         self.window_size = window_size
         self.random_state = random_state
         self.samples = samples
+
         self.dataset_dir = dataset_dir
         self.result_dir = result_dir
+        current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.saving_dir = Path(self.result_dir) / current_time
+        self.saving_dir.mkdir(parents=True, exist_ok=True)
+
         rain, river, self.flood_duration, self.var_names, self.timestamps = self.import_raw_data()
         rain_forward = moving_average(rain, rain_smoothing, "forward")
         rain_backward = moving_average(rain, rain_smoothing, "backward")
@@ -255,7 +260,7 @@ def slice_data_for_flood(
 def fit_scalers(
     data: pd.DataFrame,
 ) -> dict[str, MinMaxScaler]:
-    """Fit scalers for data."""
+    """Fit scalers for each column in the data."""
     scalers: dict[str, MinMaxScaler] = {}
     for col in data.columns:
         scaler = MinMaxScaler()
@@ -267,7 +272,7 @@ def fit_scalers(
 def fit_scaler(
     data: pd.DataFrame,
 ) -> MinMaxScaler:
-    """Fit scalers for data."""
+    """Fit scalers for the entire data."""
     scaler = MinMaxScaler()
     scaler.fit(data)
     return scaler
@@ -302,18 +307,14 @@ if __name__ == "__main__":
         result_dir=result_dir,
     )
 
-    current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-
     # Save to pickle file
-    saving_dir = Path(result_dir) / current_time
-    saving_dir.mkdir(parents=True, exist_ok=True)
-    with open(saving_dir / "catsi_dataset.pkl", "wb") as f:
+    with open(catsi_dataset.saving_dir / "catsi_dataset.pkl", "wb") as f:
         pickle.dump(catsi_dataset, f)
 
     # start context aware imputation ====================
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    input = saving_dir
-    output = saving_dir
+    input = catsi_dataset.saving_dir
+    output = catsi_dataset.saving_dir
     reload = False
     # for debugging - - -
     out_path = output
@@ -334,10 +335,9 @@ if __name__ == "__main__":
     # nRMSD (normalized Root Mean Square Deviation)
 
     model = ContAwareTimeSeriesImp(
-        catsi_dataset.var_names,
+        var_names=catsi_dataset.var_names,
         train_data=catsi_dataset.dataset["train"],
         val_data=catsi_dataset.dataset["val"],
-        # test_data=catsi_dataset["test"],
         window_size=catsi_dataset.window_size,
         out_path=output,
         device=device,
@@ -345,9 +345,10 @@ if __name__ == "__main__":
     model.fit(
         epochs=1000,
         batch_size=32,
-        eval_batch_size=32,
+        eval_batch_size=1000,
         learning_rate=1e-2,
         early_stop=True,
+        shuffle=True,
     )
 
     # model.fit(
