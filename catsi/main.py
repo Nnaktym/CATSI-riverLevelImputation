@@ -1,6 +1,4 @@
-"""
-Implementation of the CATSI (Context-Aware Time Series Imputation) model.
-"""
+"""Implementation of the CATSI (Context-Aware Time Series Imputation) model."""
 
 import logging
 import os
@@ -14,11 +12,10 @@ import pandas as pd
 import torch
 import torch.optim as optim
 import tqdm
-from model import CATSI
 from torch.nn.utils import clip_grad_norm_
-from utils import AverageMeter, TimeSeriesDataSet, build_data_loader
 
-logger = logging.getLogger("catsi")
+from catsi.model import CATSI
+from catsi.utils import AverageMeter, TimeSeriesDataSet, build_data_loader
 
 
 class ContAwareTimeSeriesImp(object):
@@ -117,7 +114,8 @@ class ContAwareTimeSeriesImp(object):
 
             # Validation phase
             self.model.eval()
-            val_loss, _, _, _ = self.evaluate(valid_iter, print_scores=False)
+            val_loss, _, _, _ = self.evaluate(valid_iter, print_scores=True)
+            print(f"Validation loss: {val_loss:.4f}")
 
             # Early stopping check
             if early_stop:
@@ -127,16 +125,24 @@ class ContAwareTimeSeriesImp(object):
                 else:
                     patience_counter += 1
                     if patience_counter >= patience:
-                        logger.info(f"Early stopping triggered after {epoch + 1} epochs")
+                        print(f"Early stopping triggered after {epoch + 1} epochs")
                         break
 
-            logger.info(f"Epoch {epoch + 1}/{epochs}")
-            logger.info(f"Training Loss: {total_loss.avg:.4f}")
-            logger.info(f"Validation Loss: {val_loss:.4f}")
-            logger.info("-" * 50)
+            print(f"Epoch {epoch + 1}/{epochs}")
+            print(f"Training Loss: {total_loss.avg:.4f}")
+            print(f"Validation Loss: {val_loss:.4f}")
+            print("-" * 50)
 
-        logger.info("Training is done.")
-        logger.info(f"Best validation loss: {best_val_loss:.4f}")
+        print("Training is done.")
+
+        loss_valid, mae, mre, nrmsd = self.evaluate(valid_iter)
+        with open(self.out_path / "final_eval.csv", "w") as txtfile:
+            txtfile.write(f"Metrics, " + (", ".join(self.var_names)) + "\n")
+            txtfile.write(f"MAE, " + (", ".join([f"{x:.3f}" for x in mae])) + "\n")
+            txtfile.write(f"MRE, " + (", ".join([f"{x:.3f}" for x in mre])) + "\n")
+            txtfile.write(f"nRMSD, " + (", ".join([f"{x:.3f}" for x in nrmsd])) + "\n")
+
+        print(f"Best validation loss: {best_val_loss:.4f}")
 
     def evaluate(
         self,
@@ -154,6 +160,7 @@ class ContAwareTimeSeriesImp(object):
         for idx, data in enumerate(data_iter):
             eval_masks = data["eval_masks"]
             eval_ = data["evals"]
+            eval_ = torch.FloatTensor(np.nan_to_num(eval_, nan=0)).to(self.device)
 
             ret = self.model(data)
             imputation = ret["imputations"]
@@ -183,9 +190,9 @@ class ContAwareTimeSeriesImp(object):
         nrmsd = [x.avg**0.5 for x in nrmsd]
 
         if print_scores:
-            logger.info("   MAE = " + ("\t".join([f"{x:.3f}" for x in mae])))
-            logger.info("   MRE = " + ("\t".join([f"{x:.3f}" for x in mre])))
-            logger.info(" nRMSD = " + ("\t".join([f"{x:.3f}" for x in nrmsd])))
+            print("   MAE = " + ("\t".join([f"{x:.3f}" for x in mae])))
+            print("   MRE = " + ("\t".join([f"{x:.3f}" for x in mre])))
+            print(" nRMSD = " + ("\t".join([f"{x:.3f}" for x in nrmsd])))
 
         return loss_valid.avg, mae, mre, nrmsd
 
@@ -246,7 +253,8 @@ class ContAwareTimeSeriesImp(object):
         pbar = tqdm.tqdm(desc="Generating imputation", total=len(data_iter))
         for _, data in enumerate(data_iter):
             if ground_truth:
-                missing_masks = np.maximum(data["eval_masks"], 1 - data["masks"])
+                # missing_masks = np.maximum(data["eval_masks"], 1 - data["masks"])
+                missing_masks = 1 - data["masks"]
             else:
                 missing_masks = 1 - data["masks"]
             ret = self.model(data)
@@ -275,5 +283,5 @@ class ContAwareTimeSeriesImp(object):
                 df.to_csv(out_dir / f"{pids[p]}.csv", index=False)
             pbar.update()
         pbar.close()
-        logger.info(f"Done, results saved in:\n {out_dir.resolve()}")
+        print(f"Done, results saved in:\n {out_dir.resolve()}")
         return imp_dfs

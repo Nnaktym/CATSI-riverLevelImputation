@@ -3,11 +3,7 @@
 import datetime
 import json
 import logging
-
-# import os
 import pickle
-
-# import sys
 from pathlib import Path
 from typing import Any
 
@@ -369,7 +365,7 @@ if __name__ == "__main__":
     # # Load the original data
     # test_set = catsi_dataset["train"]
     # test_set = catsi_dataset["val"]
-    test_set = catsi_dataset["test"]
+    test_set = catsi_dataset.dataset["test"]
 
     imputation_results = model.impute_test_set(test_set, batch_size=1, ground_truth=True)
     print(imputation_results)

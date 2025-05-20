@@ -125,32 +125,50 @@ class CATSI(nn.Module):
 
         T_max = values.shape[1]  # time_stamp length
         padding_masks = torch.ones_like(values)
+        padding_sum = padding_masks.sum(dim=1)
+        # padding_sum = torch.max(padding_sum, torch.ones_like(padding_sum))
+        data_missing_rate = 1 - masks.sum(dim=1) / padding_sum
 
         mask_sum = masks.sum(dim=1)
         mask_sum = torch.max(mask_sum, torch.ones_like(mask_sum))
 
-        data_means = torch.zeros_like(values.sum(dim=1))
-        valid_mask = mask_sum > 0
-        if valid_mask.any():
-            data_means[valid_mask] = (masks * values).sum(dim=1)[valid_mask] / mask_sum[valid_mask]
+        # data_means = torch.zeros_like(values.sum(dim=1))
+        # valid_mask = mask_sum > 0
+        # if valid_mask.any():
+        #     data_means[valid_mask] = (masks * values).sum(dim=1)[valid_mask] / mask_sum[valid_mask]
+
+        data_means = values.sum(dim=1) / padding_sum
 
         data_variance = torch.zeros_like(data_means)
-        valid_var_mask = mask_sum > 1
-        if valid_var_mask.any():
-            diff_squared = (values - data_means.unsqueeze(1)) ** 2
-            data_variance[valid_var_mask] = diff_squared.sum(dim=1)[valid_var_mask] / (
-                mask_sum[valid_var_mask] - 1
-            )
+        diff_squared = (values - data_means.unsqueeze(1)) ** 2
+        data_variance = diff_squared.sum(dim=1) / (padding_masks.sum() - 1)
         data_stdev = torch.sqrt(data_variance)
 
-        padding_sum = padding_masks.sum(dim=1)
-        padding_sum = torch.max(padding_sum, torch.ones_like(padding_sum))
-        data_missing_rate = 1 - masks.sum(dim=1) / padding_sum
+        # mask_sum = masks.sum(dim=1)
+        # mask_sum = torch.max(mask_sum, torch.ones_like(mask_sum))
+
+        # data_means = torch.zeros_like(values.sum(dim=1))
+        # valid_mask = mask_sum > 0
+        # if valid_mask.any():
+        #     data_means[valid_mask] = (masks * values).sum(dim=1)[valid_mask] / mask_sum[valid_mask]
+
+        # data_variance = torch.zeros_like(data_means)
+        # valid_var_mask = mask_sum > 1
+        # if valid_var_mask.any():
+        #     diff_squared = (values - data_means.unsqueeze(1)) ** 2
+        #     data_variance[valid_var_mask] = diff_squared.sum(dim=1)[valid_var_mask] / (
+        #         mask_sum[valid_var_mask] - 1
+        #     )
+        # data_stdev = torch.sqrt(data_variance)
+
+        # padding_sum = padding_masks.sum(dim=1)
+        # padding_sum = torch.max(padding_sum, torch.ones_like(padding_sum))
+        # data_missing_rate = 1 - masks.sum(dim=1) / padding_sum
 
         data_stats = torch.cat(
             (seq_lengths.unsqueeze(1).float(), data_means, data_stdev, data_missing_rate), dim=1
         )
-        data_stats = torch.where(data_stats != 0, data_stats, torch.zeros_like(data_stats))
+        # data_stats = torch.where(data_stats != 0, data_stats, torch.zeros_like(data_stats))
 
         if self.training:
             evals = data["evals"]

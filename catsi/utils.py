@@ -77,7 +77,7 @@ def build_data_loader(
             [torch.FloatTensor(x["pt_with_na"]) for x in batch_data], batch_first=True
         ).to(device)
         data_dict["masks"] = pad_sequence(
-            [torch.FloatTensor(x["observed_mask"] - x["eval_mask"]) for x in batch_data],
+            [torch.FloatTensor(x["observed_mask"]) for x in batch_data],
             batch_first=True,
         ).to(device)
         data_dict["time_stamps"] = pad_sequence(
