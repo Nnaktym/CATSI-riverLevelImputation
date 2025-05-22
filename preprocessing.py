@@ -359,7 +359,7 @@ if __name__ == "__main__":
     # test_set = catsi_dataset.dataset["train"]
 
     imp = model.impute_test_set(test_set, batch_size=1, ground_truth=True)
-    rmse = calc_imputation_mse_for_synthetic_nan(imp)
+    # rmse = calc_imputation_mse_for_synthetic_nan(imp)
     
     def calc_imputation_mse_for_synthetic_nan(
         imputation_results: list[pd.DataFrame],
@@ -410,11 +410,13 @@ if __name__ == "__main__":
                 imputed_value = row["imputation"]
                 if pd.isna(imputed_value):
                     prev_value = ground_truth.iloc[i]
+                    estimated.append(np.nan)
                 else:
                     prev_value += imputed_value
-                estimated.append(prev_value)
+                    estimated.append(prev_value)
             test_flood_var.loc[:, ["estimated"]] = estimated
             test_flood_var.to_csv("test_flood_var.csv")
+            # validated up to here
                 print(row)
                 temp = row[var]
                 temp = temp +
