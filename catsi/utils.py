@@ -65,13 +65,13 @@ def build_data_loader(
     ) -> dict[str, Any]:
         """Pad time series batch data."""
         lengths = [x["length"] for x in batch_data]
-        pids = [x["pid"] for x in batch_data]
+        sids = [x["sid"] for x in batch_data]
         lengths, data_idx = torch.sort(
             torch.LongTensor(lengths),
             descending=True,
         )
         batch_data = [batch_data[idx] for idx in data_idx]
-        pids = [pids[idx] for idx in data_idx]
+        sids = [sids[idx] for idx in data_idx]
         data_dict = {}
         data_dict["values"] = pad_sequence(
             [torch.FloatTensor(x["pt_with_na"]) for x in batch_data], batch_first=True
@@ -86,16 +86,12 @@ def build_data_loader(
         data_dict["rain"] = pad_sequence(
             [torch.FloatTensor(x["rain"]) for x in batch_data], batch_first=True
         ).to(device)
-        data_dict["rain_forward"] = pad_sequence(
-            [torch.FloatTensor(x["rain_accumulation_forward"]) for x in batch_data],
-            batch_first=True,
-        ).to(device)
-        data_dict["rain_backward"] = pad_sequence(
-            [torch.FloatTensor(x["rain_accumulation_backward"]) for x in batch_data],
+        data_dict["rain_acc"] = pad_sequence(
+            [torch.FloatTensor(x["rain_accumulation"]) for x in batch_data],
             batch_first=True,
         ).to(device)
         data_dict["lengths"] = lengths.to(device)
-        data_dict["pids"] = pids
+        data_dict["sids"] = sids
 
         if not testing:
             data_dict["evals"] = pad_sequence(

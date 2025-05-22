@@ -28,6 +28,7 @@
     "Pylance",
     "pyproject",
     "tamasfe",
+    "var_names",
     "x.avg"
   ],
   "flagWords": [],

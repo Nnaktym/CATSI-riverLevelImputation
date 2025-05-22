@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 dataset_dir = "data"
 result_dir = "result"
 
+n_repeat = 100
 rain_file_name = "rain_intensity.csv"
 river_file_name = "river_level.csv"
 flood_duration_file_name = "flood_duration.json"
@@ -30,29 +31,37 @@ window_size = 20
 random_state = 0
 samples = {
     "train": [
-        {"missing_rate": 0.1, "n_repeat": 100},
-        {"missing_rate": 0.2, "n_repeat": 100},
-        {"missing_rate": 0.3, "n_repeat": 100},
-        {"missing_rate": 0.4, "n_repeat": 100},
-        {"missing_rate": 0.5, "n_repeat": 100},
-        {"missing_rate": 0.6, "n_repeat": 100},
-        {"missing_rate": 0.7, "n_repeat": 100},
-        {"missing_rate": 0.8, "n_repeat": 100},
-        {"missing_rate": 0.9, "n_repeat": 100},
+        {"missing_rate": 0.1, "n_repeat": n_repeat},
+        {"missing_rate": 0.2, "n_repeat": n_repeat},
+        {"missing_rate": 0.3, "n_repeat": n_repeat},
+        {"missing_rate": 0.4, "n_repeat": n_repeat},
+        {"missing_rate": 0.5, "n_repeat": n_repeat},
+        {"missing_rate": 0.6, "n_repeat": n_repeat},
+        {"missing_rate": 0.7, "n_repeat": n_repeat},
+        {"missing_rate": 0.8, "n_repeat": n_repeat},
+        {"missing_rate": 0.9, "n_repeat": n_repeat},
     ],
     "val": [
-        {"missing_rate": 0.1, "n_repeat": 100},
-        {"missing_rate": 0.2, "n_repeat": 100},
-        {"missing_rate": 0.3, "n_repeat": 100},
-        {"missing_rate": 0.4, "n_repeat": 100},
-        {"missing_rate": 0.5, "n_repeat": 100},
-        {"missing_rate": 0.6, "n_repeat": 100},
-        {"missing_rate": 0.7, "n_repeat": 100},
-        {"missing_rate": 0.8, "n_repeat": 100},
-        {"missing_rate": 0.9, "n_repeat": 100},
+        {"missing_rate": 0.1, "n_repeat": n_repeat},
+        {"missing_rate": 0.2, "n_repeat": n_repeat},
+        {"missing_rate": 0.3, "n_repeat": n_repeat},
+        {"missing_rate": 0.4, "n_repeat": n_repeat},
+        {"missing_rate": 0.5, "n_repeat": n_repeat},
+        {"missing_rate": 0.6, "n_repeat": n_repeat},
+        {"missing_rate": 0.7, "n_repeat": n_repeat},
+        {"missing_rate": 0.8, "n_repeat": n_repeat},
+        {"missing_rate": 0.9, "n_repeat": n_repeat},
     ],
     "test": [
+        {"missing_rate": 0.1, "n_repeat": 1},
+        {"missing_rate": 0.2, "n_repeat": 1},
+        {"missing_rate": 0.3, "n_repeat": 1},
+        {"missing_rate": 0.4, "n_repeat": 1},
         {"missing_rate": 0.5, "n_repeat": 1},
+        {"missing_rate": 0.6, "n_repeat": 1},
+        {"missing_rate": 0.7, "n_repeat": 1},
+        {"missing_rate": 0.8, "n_repeat": 1},
+        {"missing_rate": 0.9, "n_repeat": 1},
     ],
 }
 
@@ -112,22 +121,17 @@ class CatsiDataset(object):
         else:
             self.river = river
 
-        rain_forward = moving_average(self.rain, rain_smoothing, "forward")
-        rain_backward = moving_average(self.rain, rain_smoothing, "backward")
+        rain_acc = moving_average(self.rain, rain_smoothing)
 
         self.river_scalers = fit_scalers(self.river)
         self.rain_scalers = fit_scalers(self.rain)
         self.river_scaler = fit_scaler(self.river)
         self.rain_scaler = fit_scaler(self.rain)
-        self.rain_ma_scaler = fit_scaler(pd.concat([rain_forward, rain_backward], axis=0))
-
-        # [TODO] diff の実装
-        # river_level_df_diff = river_level_df.diff()  # 多分結束部分がうまくdiffできてない
+        self.rain_ma_scaler = fit_scaler(rain_acc, axis=0))
 
         self.river_data = self.river_scaler.transform(self.river)
         self.rain_data = self.rain_scaler.transform(self.rain)
-        self.rain_forward_data = self.rain_ma_scaler.transform(rain_forward)
-        self.rain_backward_data = self.rain_ma_scaler.transform(rain_backward)
+        self.rain_acc_data = self.rain_ma_scaler.transform(rain_acc)
 
         self.dataset = self.generate_catsi_dataset()
 
@@ -178,6 +182,8 @@ class CatsiDataset(object):
     ) -> dict[str, Any]:
         """Generate sequencial data for CATSI"""
         sequences: dict[str, Any] = {"train": [], "val": [], "test": []}
+        river_mean = np.nanmean(self.rain_data, axis=0)
+        river_std = np.nanstd(self.rain_data, axis=0)
         for stage in sequences.keys():
             logger.info(f"Generating {stage} dataset")
             river_flood_data = slice_data_for_flood(
@@ -190,33 +196,25 @@ class CatsiDataset(object):
                 self.flood_duration[stage],
                 self.var_names,
             )
-            rain_flood_forward_data = slice_data_for_flood(
-                pd.DataFrame(self.rain_forward_data, index=self.timestamps, columns=self.var_names),
+            rain_flood_acc_data = slice_data_for_flood(
+                pd.DataFrame(self.rain_acc_data, index=self.timestamps, columns=self.var_names),
                 self.flood_duration[stage],
                 self.var_names,
             )
-            rain_flood_backward_data = slice_data_for_flood(
-                pd.DataFrame(
-                    self.rain_backward_data, index=self.timestamps, columns=self.var_names
-                ),
-                self.flood_duration[stage],
-                self.var_names,
-            )
-            assert len(river_flood_data) == len(rain_flood_forward_data)
-            assert len(rain_flood_forward_data) == len(rain_flood_backward_data)
+            assert len(river_flood_data) == len(rain_flood_acc_data)
+            assert len(rain_flood_data) == len(rain_flood_acc_data)
             for sample_info in self.samples[stage]:
                 logger.info(f"-------------- {sample_info}")
                 missing_rate, n_repeat = sample_info["missing_rate"], sample_info["n_repeat"]
                 seeds = np.arange(n_repeat) + self.random_state
                 idx = 0
-                all_pts = []
+                all_sequence = []
                 for seed in seeds:
                     np.random.seed(seed)
-                    for river_item, rain_item, rain_forward_item, rain_backward_item in zip(
+                    for river_item, rain_item, rain_acc_item in zip(
                         river_flood_data,
                         rain_flood_data,
-                        rain_flood_forward_data,
-                        rain_flood_backward_data,
+                        rain_flood_acc_data,
                     ):
                         if len(river_item) < self.window_size:
                             continue
@@ -229,45 +227,41 @@ class CatsiDataset(object):
                         synth_nan_mask = synth_nan_mask * (1 - org_nan_mask)
                         # 1: non-nan (no need to impute)
                         observed_mask = 1 - (org_nan_mask + synth_nan_mask)
-
                         # apply synthetic nan
                         river_item_with_nan = river_item.copy()
                         river_item_with_nan[synth_nan_mask == 1] = np.nan
-
                         # linear interpolation as initial value
                         river_item_interp = pd.DataFrame(river_item).interpolate(
                             method="linear", limit_direction="both"
                         )
-
                         for i in range(1, len(river_item) - self.window_size + 1):
                             seq = river_item[i : i + self.window_size]
                             if len(seq) < self.window_size:
                                 continue
-                            time_series_data = {
+                            sequence_data = {
                                 "pt_with_na": river_item_interp[i : i + self.window_size].values,
                                 "pt_with_na_org": river_item_with_nan[
                                     i : i + self.window_size
                                 ].values,
                                 "pt_ground_truth": seq.values,
                                 "rain": rain_item[i : i + self.window_size].values,
-                                "rain_accumulation_forward": rain_forward_item[
-                                    i : i + self.window_size
-                                ].values,
-                                "rain_accumulation_backward": rain_backward_item[
+                                "rain_accumulation": rain_acc_item[
                                     i : i + self.window_size
                                 ].values,
                                 "timestamps_dt": seq.index.to_list(),
                                 "observed_mask": observed_mask[i : i + self.window_size],
                                 "eval_mask": synth_nan_mask[i : i + self.window_size],
                                 "length": self.window_size,
-                                "pid": idx,
+                                "sid": idx,
                                 "vars": self.var_names,
                                 "time_stamps": np.arange(len(seq)),
+                                "river_mean": river_mean,
+                                "river_std": river_std,
                             }
-                            all_pts.append(time_series_data)
+                            all_sequence.append(sequence_data)
                             idx += 1
-            sequences[stage] = all_pts
-            print(f"{stage} dataset size: {len(all_pts)}")
+            sequences[stage] = all_sequence
+            print(f"{stage} dataset size: {len(all_sequence)}")
         return sequences
 
 
@@ -358,6 +352,9 @@ if __name__ == "__main__":
     torch.save(model.model.state_dict(), model_save_path)
     print(f"Trained model saved to {model_save_path}")
 
+    print(catsi_dataset.saving_dir)
+    #
+
     # # Load the original data
     test_set = catsi_dataset.dataset["test"]
     test_set = catsi_dataset.dataset["train"]
@@ -370,16 +367,16 @@ if __name__ == "__main__":
     for col_name in var_names:
         col_id = var_names.index(col_name)
         compare_all = pd.DataFrame()
-        for pid, imputation_result in enumerate(imputation_results):
-            print(f"pid: {pid}")
+        for sid, imputation_result in enumerate(imputation_results):
+            print(f"sid: {sid}")
             # print(imputation_result)
-            timestamp_dt = test_set[pid]["timestamps_dt"]
-            observed_mask = test_set[pid]["observed_mask"][:, col_id]
-            original_river_level = scaler.inverse_transform(test_set[pid]["pt_with_na_org"])[
+            timestamp_dt = test_set[sid]["timestamps_dt"]
+            observed_mask = test_set[sid]["observed_mask"][:, col_id]
+            original_river_level = scaler.inverse_transform(test_set[sid]["pt_with_na_org"])[
                 :, col_id
             ]
-            eval_mask = test_set[pid]["eval_mask"][:, col_id]
-            ground_truth = scaler.inverse_transform(test_set[pid]["pt_ground_truth"])[:, col_id]
+            eval_mask = test_set[sid]["eval_mask"][:, col_id]
+            ground_truth = scaler.inverse_transform(test_set[sid]["pt_ground_truth"])[:, col_id]
             compare = pd.DataFrame(
                 {
                     "timestamps": timestamp_dt,
@@ -395,7 +392,7 @@ if __name__ == "__main__":
                 assert col_name == row["analyte"]
                 imputed_value = row["imputation"]
                 compare.loc[compare.index == timestamp_dt[tid], "imputation"] = imputed_value
-            imputation = np.zeros_like(test_set[pid]["pt_ground_truth"])
+            imputation = np.zeros_like(test_set[sid]["pt_ground_truth"])
             imputation[:, col_id] = compare["imputation"].values
             compare["imputation"] = scaler.inverse_transform(imputation)[:, col_id]
             compare["imputation"] = np.where(
@@ -489,204 +486,203 @@ if __name__ == "__main__":
 
     catsi_dataset2: dict[str, Any] = {"train": [], "val": [], "test": []}
 
-    for key, river_data in zip(["test"], [test_river_level2]):
-        seeds_to_run = [seeds[0]] if key == "test" else seeds
-        idx = 0
-        all_pts = []
-        for seed in seeds_to_run:
-            np.random.seed(seed)
-            for item in river_data:
-                if len(item) < window_size:
-                    continue
+    # for key, river_data in zip(["test"], [test_river_level2]):
+    #     seeds_to_run = [seeds[0]] if key == "test" else seeds
+    #     idx = 0
+    #     all_pts = []
+    #     for seed in seeds_to_run:
+    #         np.random.seed(seed)
+    #         for item in river_data:
+    #             if len(item) < window_size:
+    #                 continue
 
-                dat = item[cols_to_include]
-                peak_nan_mask = np.zeros_like(dat, dtype=int)
-                for col in cols_to_include:
-                    dat_col = dat[col]
-                    peak_pos = dat_col.argmax()
-                    width = 2
-                    start = max(0, peak_pos - width) + 5
-                    end = min(dat.shape[0], peak_pos + width) + 5
-                    peak_nan_mask[start:end, cols_to_include.index(col)] = 1
+    #             dat = item[cols_to_include]
+    #             peak_nan_mask = np.zeros_like(dat, dtype=int)
+    #             for col in cols_to_include:
+    #                 dat_col = dat[col]
+    #                 peak_pos = dat_col.argmax()
+    #                 width = 2
+    #                 start = max(0, peak_pos - width) + 5
+    #                 end = min(dat.shape[0], peak_pos + width) + 5
+    #                 peak_nan_mask[start:end, cols_to_include.index(col)] = 1
 
-                original_nan_mask = dat.isna().astype(int).values
+    #             original_nan_mask = dat.isna().astype(int).values
 
-                synthetic_nan_mask = (
-                    np.random.rand(len(dat), len(cols_to_include)) < missing_ratio
-                ).astype(int)
-                synthetic_nan_mask = np.maximum(synthetic_nan_mask.copy(), peak_nan_mask).astype(
-                    int
-                )
-                synthetic_nan_mask = synthetic_nan_mask.copy() * (1 - original_nan_mask)
+    #             synthetic_nan_mask = (
+    #                 np.random.rand(len(dat), len(cols_to_include)) < missing_ratio
+    #             ).astype(int)
+    #             synthetic_nan_mask = np.maximum(synthetic_nan_mask.copy(), peak_nan_mask).astype(
+    #                 int
+    #             )
+    #             synthetic_nan_mask = synthetic_nan_mask.copy() * (1 - original_nan_mask)
 
-                dat_with_nan = dat.copy()
-                dat_with_nan[synthetic_nan_mask == 1] = np.nan
-                dat_interp = pd.DataFrame(dat).interpolate(method="linear", limit_direction="both")
+    #             dat_with_nan = dat.copy()
+    #             dat_with_nan[synthetic_nan_mask == 1] = np.nan
+    #             dat_interp = pd.DataFrame(dat).interpolate(method="linear", limit_direction="both")
 
-                rain_forward_dat = rain_forward_acc_df.loc[dat.index]
-                rain_backward_dat = rain_backward_acc_df.loc[dat.index]
+    #             rain_forward_dat = rain_forward_acc_df.loc[dat.index]
+    #             rain_backward_dat = rain_backward_acc_df.loc[dat.index]
 
-                for i in range(1, len(dat) - window_size + 1):
-                    seq = dat[i : i + window_size]
-                    seq_interp = dat_interp[i : i + window_size]
-                    seq_with_synthetic_nan = dat_with_nan[i : i + window_size]
-                    scaled_seq = scaler.transform(seq)
-                    scaled_seq_interp = scaler.transform(seq_interp)
-                    scaled_seq_with_synthetic_nan = scaler.transform(seq_with_synthetic_nan)
+    #             for i in range(1, len(dat) - window_size + 1):
+    #                 seq = dat[i : i + window_size]
+    #                 seq_interp = dat_interp[i : i + window_size]
+    #                 seq_with_synthetic_nan = dat_with_nan[i : i + window_size]
+    #                 scaled_seq = scaler.transform(seq)
+    #                 scaled_seq_interp = scaler.transform(seq_interp)
+    #                 scaled_seq_with_synthetic_nan = scaler.transform(seq_with_synthetic_nan)
 
-                    rain_forward_seq = rain_forward_dat[i : i + window_size]
-                    rain_backward_seq = rain_backward_dat[i : i + window_size]
-                    scaled_rain_forward_seq = rain_scaler.transform(rain_forward_seq)
-                    scaled_rain_backward_seq = rain_scaler.transform(rain_backward_seq)
+    #                 rain_forward_seq = rain_forward_dat[i : i + window_size]
+    #                 rain_backward_seq = rain_backward_dat[i : i + window_size]
+    #                 scaled_rain_forward_seq = rain_scaler.transform(rain_forward_seq)
+    #                 scaled_rain_backward_seq = rain_scaler.transform(rain_backward_seq)
 
-                    if len(seq) < window_size:
-                        continue
+    #                 if len(seq) < window_size:
+    #                     continue
 
-                    timestamps = seq.index.to_list()
+    #                 timestamps = seq.index.to_list()
 
-                    seq_original_nan_mask = original_nan_mask[i : i + window_size]
-                    seq_synthetic_nan_mask = synthetic_nan_mask[i : i + window_size]
+    #                 seq_original_nan_mask = original_nan_mask[i : i + window_size]
+    #                 seq_synthetic_nan_mask = synthetic_nan_mask[i : i + window_size]
 
-                    # if key == "test":
-                    #     multiplier = 2
-                    # else:
-                    #     multiplier = 1
+    #                 # if key == "test":
+    #                 #     multiplier = 2
+    #                 # else:
+    #                 #     multiplier = 1
 
-                    time_series_data = {
-                        "pt_with_na": scaled_seq_interp.copy(),
-                        "pt_with_na_org": scaled_seq_with_synthetic_nan.copy(),
-                        "pt_ground_truth": scaled_seq.copy(),
-                        "rain_accumulation_forward": scaled_rain_forward_seq.copy(),
-                        "rain_accumulation_backward": scaled_rain_backward_seq.copy(),
-                        "timestamps_dt": timestamps,
-                        "observed_mask": 1 - seq_original_nan_mask.copy(),
-                        # "observed_mask": 1
-                        # - np.maximum(seq_original_nan_mask.copy(), 1 - seq_synthetic_nan_mask.copy()),
-                        "eval_mask": seq_synthetic_nan_mask.copy(),
-                        "length": window_size,
-                        "pid": idx,
-                        "vars": cols_to_include,
-                        "time_stamps": np.arange(len(seq)),
-                        "river_scaler": scaler,
-                        "rain_scaler": rain_scaler,
-                    }
-                    all_pts.append(time_series_data)
-                    idx += 1
-        catsi_dataset2[key] = all_pts
-        print(f"{key} dataset size: {len(all_pts)}")
+    #                 sequence_data = {
+    #                     "pt_with_na": scaled_seq_interp.copy(),
+    #                     "pt_with_na_org": scaled_seq_with_synthetic_nan.copy(),
+    #                     "pt_ground_truth": scaled_seq.copy(),
+    #                     "rain_accumulation": scaled_rain_forward_seq.copy(),
+    #                     "timestamps_dt": timestamps,
+    #                     "observed_mask": 1 - seq_original_nan_mask.copy(),
+    #                     # "observed_mask": 1
+    #                     # - np.maximum(seq_original_nan_mask.copy(), 1 - seq_synthetic_nan_mask.copy()),
+    #                     "eval_mask": seq_synthetic_nan_mask.copy(),
+    #                     "length": window_size,
+    #                     "sid": idx,
+    #                     "vars": cols_to_include,
+    #                     "time_stamps": np.arange(len(seq)),
+    #                     "river_scaler": scaler,
+    #                     "rain_scaler": rain_scaler,
+    #                 }
+    #                 all_pts.append(sequence_data)
+    #                 idx += 1
+    #     catsi_dataset2[key] = all_pts
+    #     print(f"{key} dataset size: {len(all_pts)}")
 
-    test_set = catsi_dataset2["test"]
+    # test_set = catsi_dataset2["test"]
 
-    imputation_results = model.impute_test_set(test_set, batch_size=1, ground_truth=True)
-    print(imputation_results)
+    # imputation_results = model.impute_test_set(test_set, batch_size=1, ground_truth=True)
+    # print(imputation_results)
 
-    # create imputation result
-    # ground_truth = test_river_level[0]
-    for col_name in var_names:
-        col_id = var_names.index(col_name)
-        compare_all = pd.DataFrame()
-        for pid, imputation_result in enumerate(imputation_results):
-            print(f"pid: {pid}")
-            # print(imputation_result)
-            timestamp_dt = test_set[pid]["timestamps_dt"]
-            observed_mask = test_set[pid]["observed_mask"][:, col_id]
-            original_river_level = scaler.inverse_transform(test_set[pid]["pt_with_na_org"])[
-                :, col_id
-            ]
-            eval_mask = test_set[pid]["eval_mask"][:, col_id]
-            ground_truth = scaler.inverse_transform(test_set[pid]["pt_ground_truth"])[:, col_id]
-            compare = pd.DataFrame(
-                {
-                    "timestamps": timestamp_dt,
-                    "ground_truth": ground_truth,
-                    "ground_truth_with_synthetic_nan": original_river_level,
-                    "imputation": np.nan,
-                },
-                index=timestamp_dt,
-            )
-            col_imputation_result = imputation_result[imputation_result["analyte"] == col_name]
-            for _, row in col_imputation_result.iterrows():
-                tid = row["tid"]
-                assert col_name == row["analyte"]
-                imputed_value = row["imputation"]
-                compare.loc[compare.index == timestamp_dt[tid], "imputation"] = imputed_value
-            imputation = np.zeros_like(test_set[pid]["pt_ground_truth"])
-            imputation[:, col_id] = compare["imputation"].values
-            compare["imputation"] = scaler.inverse_transform(imputation)[:, col_id]
-            compare["imputation"] = np.where(
-                compare["imputation"].isna(), compare["ground_truth"], compare["imputation"]
-            )
+    # # create imputation result
+    # # ground_truth = test_river_level[0]
+    # for col_name in var_names:
+    #     col_id = var_names.index(col_name)
+    #     compare_all = pd.DataFrame()
+    #     for sid, imputation_result in enumerate(imputation_results):
+    #         print(f"sid: {sid}")
+    #         # print(imputation_result)
+    #         timestamp_dt = test_set[sid]["timestamps_dt"]
+    #         observed_mask = test_set[sid]["observed_mask"][:, col_id]
+    #         original_river_level = scaler.inverse_transform(test_set[sid]["pt_with_na_org"])[
+    #             :, col_id
+    #         ]
+    #         eval_mask = test_set[sid]["eval_mask"][:, col_id]
+    #         ground_truth = scaler.inverse_transform(test_set[sid]["pt_ground_truth"])[:, col_id]
+    #         compare = pd.DataFrame(
+    #             {
+    #                 "timestamps": timestamp_dt,
+    #                 "ground_truth": ground_truth,
+    #                 "ground_truth_with_synthetic_nan": original_river_level,
+    #                 "imputation": np.nan,
+    #             },
+    #             index=timestamp_dt,
+    #         )
+    #         col_imputation_result = imputation_result[imputation_result["analyte"] == col_name]
+    #         for _, row in col_imputation_result.iterrows():
+    #             tid = row["tid"]
+    #             assert col_name == row["analyte"]
+    #             imputed_value = row["imputation"]
+    #             compare.loc[compare.index == timestamp_dt[tid], "imputation"] = imputed_value
+    #         imputation = np.zeros_like(test_set[sid]["pt_ground_truth"])
+    #         imputation[:, col_id] = compare["imputation"].values
+    #         compare["imputation"] = scaler.inverse_transform(imputation)[:, col_id]
+    #         compare["imputation"] = np.where(
+    #             compare["imputation"].isna(), compare["ground_truth"], compare["imputation"]
+    #         )
 
-            # compare_all["initial_value"] = river_level_df.loc[initial_timestamps, col_name].values
-            # compare_all["ground_truth"] = compare_all["initial_value"] + compare_all["ground_truth"]
-            if len(compare_all) == 0:
-                compare_all = compare
-            else:
-                compare = compare[~compare["timestamps"].isin(compare_all["timestamps"])]
-                compare_all = pd.concat([compare_all, compare], axis=0)
+    #         # compare_all["initial_value"] = river_level_df.loc[initial_timestamps, col_name].values
+    #         # compare_all["ground_truth"] = compare_all["initial_value"] + compare_all["ground_truth"]
+    #         if len(compare_all) == 0:
+    #             compare_all = compare
+    #         else:
+    #             compare = compare[~compare["timestamps"].isin(compare_all["timestamps"])]
+    #             compare_all = pd.concat([compare_all, compare], axis=0)
 
-        initial_timestamps = compare_all["timestamps"].values - pd.Timedelta(minutes=30)
-        converted_imputation = []
-        for k in range(len(compare_all)):
-            imputed = compare_all["imputation"].iloc[k]
-            # print(f"imputed: {imputed}")
-            initial = river_level_df.loc[initial_timestamps, col_name].iloc[k]
-            # print(f"initial: {initial}")
-            if pd.isna(initial):
-                print("initial is NaN")
-                converted = converted + imputed
-            else:
-                converted = initial + imputed
-            converted_imputation.append(converted)
+    #     initial_timestamps = compare_all["timestamps"].values - pd.Timedelta(minutes=30)
+    #     converted_imputation = []
+    #     for k in range(len(compare_all)):
+    #         imputed = compare_all["imputation"].iloc[k]
+    #         # print(f"imputed: {imputed}")
+    #         initial = river_level_df.loc[initial_timestamps, col_name].iloc[k]
+    #         # print(f"initial: {initial}")
+    #         if pd.isna(initial):
+    #             print("initial is NaN")
+    #             converted = converted + imputed
+    #         else:
+    #             converted = initial + imputed
+    #         converted_imputation.append(converted)
 
-        compare_all["imputation"] = converted_imputation
+    #     compare_all["imputation"] = converted_imputation
 
-        converted_ground_truth = []
-        for k in range(len(compare_all)):
-            gt = compare_all["ground_truth"].iloc[k]
-            initial = river_level_df.loc[initial_timestamps, col_name].iloc[k]
-            # print(f"initial: {initial}")
-            if pd.isna(initial):
-                print("initial is NaN")
-                converted = converted + gt
-            else:
-                converted = initial + gt
-            converted_ground_truth.append(converted)
-        compare_all["ground_truth"] = converted_ground_truth
+    #     converted_ground_truth = []
+    #     for k in range(len(compare_all)):
+    #         gt = compare_all["ground_truth"].iloc[k]
+    #         initial = river_level_df.loc[initial_timestamps, col_name].iloc[k]
+    #         # print(f"initial: {initial}")
+    #         if pd.isna(initial):
+    #             print("initial is NaN")
+    #             converted = converted + gt
+    #         else:
+    #             converted = initial + gt
+    #         converted_ground_truth.append(converted)
+    #     compare_all["ground_truth"] = converted_ground_truth
 
-        compare_all["ground_truth_with_synthetic_nan"] = np.where(
-            compare_all["ground_truth_with_synthetic_nan"].isna(),
-            np.nan,
-            compare_all["ground_truth"],
-        )
+    #     compare_all["ground_truth_with_synthetic_nan"] = np.where(
+    #         compare_all["ground_truth_with_synthetic_nan"].isna(),
+    #         np.nan,
+    #         compare_all["ground_truth"],
+    #     )
 
-        plt.figure(figsize=(15, 6))
-        plt.plot(
-            compare_all["imputation"],
-            label="Imputation",
-            color="red",
-            # linestyle="--",
-            # marker="x",
-        )
-        plt.plot(
-            compare_all["ground_truth"],
-            label="Ground Truth",
-            color="blue",
-            # linestyle="--",
-            # marker="o",
-        )
-        plt.plot(
-            compare_all["ground_truth_with_synthetic_nan"],
-            label="Ground Truth with Synthetic NaN",
-            color="green",
-            # linestyle="--",
-            marker="x",
-        )
-        plt.title("Imputation vs Ground Truth")
-        plt.xlabel("Time Stamps")
-        plt.ylabel("Values")
-        plt.legend()
-        plt.grid()
-        plt.savefig(f"{col_name}_imputation_vs_ground_truth.png")
-        plt.close()
-        print(f"Saved plot for {col_name} imputation vs ground truth.")
+    #     plt.figure(figsize=(15, 6))
+    #     plt.plot(
+    #         compare_all["imputation"],
+    #         label="Imputation",
+    #         color="red",
+    #         # linestyle="--",
+    #         # marker="x",
+    #     )
+    #     plt.plot(
+    #         compare_all["ground_truth"],
+    #         label="Ground Truth",
+    #         color="blue",
+    #         # linestyle="--",
+    #         # marker="o",
+    #     )
+    #     plt.plot(
+    #         compare_all["ground_truth_with_synthetic_nan"],
+    #         label="Ground Truth with Synthetic NaN",
+    #         color="green",
+    #         # linestyle="--",
+    #         marker="x",
+    #     )
+    #     plt.title("Imputation vs Ground Truth")
+    #     plt.xlabel("Time Stamps")
+    #     plt.ylabel("Values")
+    #     plt.legend()
+    #     plt.grid()
+    #     plt.savefig(f"{col_name}_imputation_vs_ground_truth.png")
+    #     plt.close()
+    #     print(f"Saved plot for {col_name} imputation vs ground truth.")

@@ -121,8 +121,7 @@ class CATSI(nn.Module):
         seq_lengths = data["lengths"]
         values = data["values"]
         masks = data["masks"]
-        rain_forward = data["rain_forward"]
-        rain_backward = data["rain_backward"]
+        rain_acc = data["rain_acc"]
         rain = data["rain"]
 
         T_max = values.shape[1]  # time_stamp length
@@ -185,7 +184,7 @@ class CATSI(nn.Module):
 
         context_mlp = self.context_mlp(data_stats)  # multi-layer perceptron (statistical contexts)
         context_rnn = self.context_rnn(
-            torch.cat((x_complement, rain, rain_forward), dim=-1),
+            torch.cat((x_complement, rain, rain_acc), dim=-1),
             seq_lengths,
         )
         # context_rnn = self.context_rnn(

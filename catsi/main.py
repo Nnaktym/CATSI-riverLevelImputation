@@ -215,11 +215,11 @@ class ContAwareTimeSeriesImp(object):
             ret = self.model(data)
             imputation = ret["imputations"]
 
-            pids = data["pids"]
+            sids = data["sids"]
             imp_df = pd.DataFrame(
-                eval_masks.nonzero().data.cpu().numpy(), columns=["pid", "tid", "colid"]
+                eval_masks.nonzero().data.cpu().numpy(), columns=["sid", "tid", "colid"]
             )
-            imp_df["pid"] = imp_df["pid"].map({i: pid for i, pid in enumerate(pids)})
+            imp_df["sid"] = imp_df["sid"].map({i: sid for i, sid in enumerate(sids)})
             imp_df["epoch"] = epoch
             imp_df["analyte"] = imp_df["colid"].map(self.var_names_dict)
             imp_df[colname] = imputation[eval_masks == 1].data.cpu().numpy()
@@ -232,7 +232,7 @@ class ContAwareTimeSeriesImp(object):
             raise ValueError(
                 "No valid data frames. Check the input data or conditions in the loop."
             )
-        imp_dfs = pd.concat(imp_dfs, axis=0).set_index(["pid", "tid", "analyte", "ground_truth"])
+        imp_dfs = pd.concat(imp_dfs, axis=0).set_index(["sid", "tid", "analyte", "ground_truth"])
         return imp_dfs
 
     def impute_test_set(
@@ -260,18 +260,18 @@ class ContAwareTimeSeriesImp(object):
             imputation = ret["imputations"]
             data_set[i]["imputation"] = imputation
 
-            pids = data["pids"]
+            sids = data["sids"]
             imp_df = pd.DataFrame(
-                missing_masks.nonzero().data.cpu().numpy(), columns=["pid", "tid", "colid"]
+                missing_masks.nonzero().data.cpu().numpy(), columns=["sid", "tid", "colid"]
             )
-            imp_df["pid"] = imp_df["pid"].map({i: pid for i, pid in enumerate(pids)})
+            imp_df["sid"] = imp_df["sid"].map({i: sid for i, sid in enumerate(sids)})
             imp_df["analyte"] = imp_df["colid"].map(self.var_names_dict)
             imp_df["imputation"] = imputation[missing_masks == 1].data.cpu().numpy()
             if ground_truth:
                 imp_df["ground_truth"] = data["evals"][missing_masks == 1].numpy()
             imp_dfs.append(imp_df)
 
-            for p in range(len(pids)):
+            for p in range(len(sids)):
                 seq_len = data["lengths"][p]
                 time_stamps = data["time_stamps"][p, :seq_len].unsqueeze(1)
                 imp = imputation[p, :seq_len, :]
@@ -280,7 +280,7 @@ class ContAwareTimeSeriesImp(object):
                     columns=["CHARTTIME"] + self.var_names,
                 )
                 df["CHARTTIME"] = df["CHARTTIME"].apply(int)
-                df.to_csv(out_dir / f"{pids[p]}.csv", index=False)
+                df.to_csv(out_dir / f"{sids[p]}.csv", index=False)
             pbar.update()
         pbar.close()
         print(f"Done, results saved in:\n {out_dir.resolve()}")
