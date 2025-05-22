@@ -108,6 +108,7 @@ class ContAwareTimeSeriesImp(object):
 
                 pbar.set_description(pbar_desc + f"Training loss={total_loss.avg:.3e}")
                 pbar.update()
+
             pbar_desc = f"Epoch {epoch + 1} done, Training loss={total_loss.avg:.3e}"
             pbar.set_description(pbar_desc)
             pbar.close()
@@ -118,7 +119,7 @@ class ContAwareTimeSeriesImp(object):
             # Validation phase
             self.model.eval()
             val_loss, _, _, _ = self.evaluate(valid_iter, print_scores=True)
-            print(f"Validation loss: {val_loss:.4f}")
+            logger.info(f"Validation loss: {val_loss:.4f}")
 
             # Early stopping check
             if early_stop:
@@ -128,24 +129,24 @@ class ContAwareTimeSeriesImp(object):
                 else:
                     patience_counter += 1
                     if patience_counter >= patience:
-                        print(f"Early stopping triggered after {epoch + 1} epochs")
+                        logger.info(f"Early stopping triggered after {epoch + 1} epochs")
                         break
 
-            print(f"Epoch {epoch + 1}/{epochs}")
-            print(f"Training Loss: {total_loss.avg:.4f}")
-            print(f"Validation Loss: {val_loss:.4f}")
-            print("-" * 50)
+            logger.info(f"Epoch {epoch + 1}/{epochs}")
+            logger.info(f"Training Loss: {total_loss.avg:.4f}")
+            logger.info(f"Validation Loss: {val_loss:.4f}")
+            logger.info("-" * 50)
 
-        print("Training is done.")
+        logger.info("Training is done.")
 
         loss_valid, mae, mre, nrmsd = self.evaluate(valid_iter)
         with open(self.out_path / "final_eval.csv", "w") as txtfile:
-            txtfile.write(f"Metrics, " + (", ".join(self.var_names)) + "\n")
-            txtfile.write(f"MAE, " + (", ".join([f"{x:.3f}" for x in mae])) + "\n")
-            txtfile.write(f"MRE, " + (", ".join([f"{x:.3f}" for x in mre])) + "\n")
-            txtfile.write(f"nRMSD, " + (", ".join([f"{x:.3f}" for x in nrmsd])) + "\n")
+            txtfile.write("Metrics, " + (", ".join(self.var_names)) + "\n")
+            txtfile.write("MAE, " + (", ".join([f"{x:.3f}" for x in mae])) + "\n")
+            txtfile.write("MRE, " + (", ".join([f"{x:.3f}" for x in mre])) + "\n")
+            txtfile.write("nRMSD, " + (", ".join([f"{x:.3f}" for x in nrmsd])) + "\n")
 
-        print(f"Best validation loss: {best_val_loss:.4f}")
+        logger.info(f"Best validation loss: {best_val_loss:.4f}")
 
     def evaluate(
         self,
@@ -178,8 +179,7 @@ class ContAwareTimeSeriesImp(object):
             [mae[i].update(abs_err[i], eval_.shape[0]) for i in range(self.num_vars)]
             [mre[i].update(rel_err[i], eval_.shape[0]) for i in range(self.num_vars)]
 
-            range_norm = 1  # max_vals - min_vals
-            nsd = eval_masks * (eval_ - imputation).abs() / range_norm
+            nsd = eval_masks * (eval_ - imputation).abs()
             for i, (nsd_val, nsd_num) in enumerate(
                 zip((nsd.norm(dim=[0, 1]) ** 2).tolist(), eval_masks.sum(dim=[0, 1]).tolist()),
             ):
@@ -193,9 +193,9 @@ class ContAwareTimeSeriesImp(object):
         nrmsd = [x.avg**0.5 for x in nrmsd]
 
         if print_scores:
-            print("   MAE = " + ("\t".join([f"{x:.3f}" for x in mae])))
-            print("   MRE = " + ("\t".join([f"{x:.3f}" for x in mre])))
-            print(" nRMSD = " + ("\t".join([f"{x:.3f}" for x in nrmsd])))
+            logger.info("   MAE = " + ("\t".join([f"{x:.3f}" for x in mae])))
+            logger.info("   MRE = " + ("\t".join([f"{x:.3f}" for x in mre])))
+            logger.info(" nRMSD = " + ("\t".join([f"{x:.3f}" for x in nrmsd])))
 
         return loss_valid.avg, mae, mre, nrmsd
 
@@ -211,28 +211,25 @@ class ContAwareTimeSeriesImp(object):
         for _, data in enumerate(data_iter):
             eval_masks = data["eval_masks"]
             eval_ = data["evals"]
-
             ret = self.model(data)
             imputation = ret["imputations"]
-
             sids = data["sids"]
             imp_df = pd.DataFrame(
                 eval_masks.nonzero().data.cpu().numpy(), columns=["sid", "tid", "colid"]
             )
             imp_df["sid"] = imp_df["sid"].map({i: sid for i, sid in enumerate(sids)})
             imp_df["epoch"] = epoch
-            imp_df["analyte"] = imp_df["colid"].map(self.var_names_dict)
+            imp_df["var_name"] = imp_df["colid"].map(self.var_names_dict)
             imp_df[colname] = imputation[eval_masks == 1].data.cpu().numpy()
             imp_df[colname + "_feat"] = ret["feat_imp"][eval_masks == 1].data.cpu().numpy()
             imp_df[colname + "_hist"] = ret["hist_imp"][eval_masks == 1].data.cpu().numpy()
-
             imp_df["ground_truth"] = eval_[eval_masks == 1].data.cpu().numpy()
             imp_dfs.append(imp_df)
         if not imp_dfs:
             raise ValueError(
                 "No valid data frames. Check the input data or conditions in the loop."
             )
-        imp_dfs = pd.concat(imp_dfs, axis=0).set_index(["sid", "tid", "analyte", "ground_truth"])
+        imp_dfs = pd.concat(imp_dfs, axis=0).set_index(["sid", "tid", "var_name", "ground_truth"])
         return imp_dfs
 
     def impute_test_set(
@@ -248,10 +245,6 @@ class ContAwareTimeSeriesImp(object):
         else:
             data_iter = build_data_loader(data_set, self.device, batch_size, False, testing=True)
         self.model.eval()
-
-        out_dir = self.out_path / "imputations_test_set"
-        out_dir.mkdir(exist_ok=True)
-
         imp_dfs = []
         pbar = tqdm.tqdm(desc="Generating imputation", total=len(data_iter))
         for i, data in enumerate(data_iter):
@@ -259,29 +252,16 @@ class ContAwareTimeSeriesImp(object):
             ret = self.model(data)
             imputation = ret["imputations"]
             data_set[i]["imputation"] = imputation
-
             sids = data["sids"]
             imp_df = pd.DataFrame(
                 missing_masks.nonzero().data.cpu().numpy(), columns=["sid", "tid", "colid"]
             )
             imp_df["sid"] = imp_df["sid"].map({i: sid for i, sid in enumerate(sids)})
-            imp_df["analyte"] = imp_df["colid"].map(self.var_names_dict)
+            imp_df["var_name"] = imp_df["colid"].map(self.var_names_dict)
             imp_df["imputation"] = imputation[missing_masks == 1].data.cpu().numpy()
             if ground_truth:
                 imp_df["ground_truth"] = data["evals"][missing_masks == 1].numpy()
             imp_dfs.append(imp_df)
-
-            for p in range(len(sids)):
-                seq_len = data["lengths"][p]
-                time_stamps = data["time_stamps"][p, :seq_len].unsqueeze(1)
-                imp = imputation[p, :seq_len, :]
-                df = pd.DataFrame(
-                    torch.cat([time_stamps, imp], dim=1).data.cpu().numpy(),
-                    columns=["CHARTTIME"] + self.var_names,
-                )
-                df["CHARTTIME"] = df["CHARTTIME"].apply(int)
-                df.to_csv(out_dir / f"{sids[p]}.csv", index=False)
             pbar.update()
         pbar.close()
-        print(f"Done, results saved in:\n {out_dir.resolve()}")
         return imp_dfs

@@ -32,6 +32,8 @@ class AverageMeter(object):
 
 
 class TimeSeriesDataSet(Dataset):
+    """Time series dataset."""
+
     def __init__(self, data):
         super().__init__()
         self.content = data
@@ -41,14 +43,6 @@ class TimeSeriesDataSet(Dataset):
 
     def __getitem__(self, idx):
         return self.content[idx]
-
-
-def replace_nan_with_col_mean(x):
-    missing_flag = np.isnan(x)
-    missing_indices = np.where(missing_flag)
-    col_means = np.nanmean(x, axis=0)
-    x[missing_indices] = np.take(col_means, missing_indices[1])
-    return x, missing_flag
 
 
 def build_data_loader(
@@ -89,6 +83,12 @@ def build_data_loader(
         data_dict["rain_acc"] = pad_sequence(
             [torch.FloatTensor(x["rain_accumulation"]) for x in batch_data],
             batch_first=True,
+        ).to(device)
+        data_dict["river_mean"] = pad_sequence(
+            [torch.FloatTensor(x["river_mean"]) for x in batch_data], batch_first=True
+        ).to(device)
+        data_dict["river_std"] = pad_sequence(
+            [torch.FloatTensor(x["river_std"]) for x in batch_data], batch_first=True
         ).to(device)
         data_dict["lengths"] = lengths.to(device)
         data_dict["sids"] = sids

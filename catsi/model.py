@@ -97,11 +97,10 @@ class CATSI(nn.Module):
         self.hidden_size = hidden_size
 
         self.context_mlp = nn.Sequential(
-            nn.Linear(3 * self.num_vars + 1, 2 * context_hidden),
+            nn.Linear(2 * self.num_vars + 1, 2 * context_hidden),
             nn.ReLU(),
             nn.Linear(2 * context_hidden, context_hidden),
         )
-        # self.context_rnn = RNNContext(4 * self.num_vars, context_hidden)
         self.context_rnn = RNNContext(3 * self.num_vars, context_hidden)
 
         self.initial_hidden = nn.Linear(2 * context_hidden, 2 * hidden_size)
@@ -123,53 +122,16 @@ class CATSI(nn.Module):
         masks = data["masks"]
         rain_acc = data["rain_acc"]
         rain = data["rain"]
+        river_mean = data["river_mean"]
+        river_std = data["river_std"]
 
         T_max = values.shape[1]  # time_stamp length
         padding_masks = torch.ones_like(values)
-        padding_sum = padding_masks.sum(dim=1)
-        # padding_sum = torch.max(padding_sum, torch.ones_like(padding_sum))
-        data_missing_rate = 1 - masks.sum(dim=1) / padding_sum
 
         mask_sum = masks.sum(dim=1)
         mask_sum = torch.max(mask_sum, torch.ones_like(mask_sum))
 
-        # data_means = torch.zeros_like(values.sum(dim=1))
-        # valid_mask = mask_sum > 0
-        # if valid_mask.any():
-        #     data_means[valid_mask] = (masks * values).sum(dim=1)[valid_mask] / mask_sum[valid_mask]
-
-        data_means = values.sum(dim=1) / padding_sum
-
-        data_variance = torch.zeros_like(data_means)
-        diff_squared = (values - data_means.unsqueeze(1)) ** 2
-        data_variance = diff_squared.sum(dim=1) / (padding_masks.sum() - 1)
-        data_stdev = torch.sqrt(data_variance)
-
-        # mask_sum = masks.sum(dim=1)
-        # mask_sum = torch.max(mask_sum, torch.ones_like(mask_sum))
-
-        # data_means = torch.zeros_like(values.sum(dim=1))
-        # valid_mask = mask_sum > 0
-        # if valid_mask.any():
-        #     data_means[valid_mask] = (masks * values).sum(dim=1)[valid_mask] / mask_sum[valid_mask]
-
-        # data_variance = torch.zeros_like(data_means)
-        # valid_var_mask = mask_sum > 1
-        # if valid_var_mask.any():
-        #     diff_squared = (values - data_means.unsqueeze(1)) ** 2
-        #     data_variance[valid_var_mask] = diff_squared.sum(dim=1)[valid_var_mask] / (
-        #         mask_sum[valid_var_mask] - 1
-        #     )
-        # data_stdev = torch.sqrt(data_variance)
-
-        # padding_sum = padding_masks.sum(dim=1)
-        # padding_sum = torch.max(padding_sum, torch.ones_like(padding_sum))
-        # data_missing_rate = 1 - masks.sum(dim=1) / padding_sum
-
-        data_stats = torch.cat(
-            (seq_lengths.unsqueeze(1).float(), data_means, data_stdev, data_missing_rate), dim=1
-        )
-        # data_stats = torch.where(data_stats != 0, data_stats, torch.zeros_like(data_stats))
+        data_stats = torch.cat((seq_lengths.unsqueeze(1).float(), river_mean, river_std), dim=1)
 
         if self.training:
             evals = data["evals"]
@@ -187,10 +149,6 @@ class CATSI(nn.Module):
             torch.cat((x_complement, rain, rain_acc), dim=-1),
             seq_lengths,
         )
-        # context_rnn = self.context_rnn(
-        #     torch.cat((x_complement, rain, rain_forward, rain_backward), dim=-1),
-        #     seq_lengths,
-        # )
         context_vec = torch.cat((context_mlp, context_rnn), dim=1)
         h = self.initial_hidden(context_vec)
         c = self.initial_cell_state(h)
