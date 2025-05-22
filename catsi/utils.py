@@ -83,6 +83,9 @@ def build_data_loader(
         data_dict["time_stamps"] = pad_sequence(
             [torch.FloatTensor(x["time_stamps"]) for x in batch_data], batch_first=True
         ).to(device)
+        data_dict["rain"] = pad_sequence(
+            [torch.FloatTensor(x["rain"]) for x in batch_data], batch_first=True
+        ).to(device)
         data_dict["rain_forward"] = pad_sequence(
             [torch.FloatTensor(x["rain_accumulation_forward"]) for x in batch_data],
             batch_first=True,
@@ -112,10 +115,3 @@ def build_data_loader(
     )
 
     return data_iter
-
-
-def build_data_loaders(data_path, train_size, batch_size, device, shuffle=True):
-    train_set, test_set = load_data(data_path, valid_size=1 - train_size)
-    train_iter = build_data_loader(train_set, device, batch_size, shuffle)
-    test_iter = build_data_loader(test_set, device, batch_size, shuffle)
-    return train_iter, test_iter

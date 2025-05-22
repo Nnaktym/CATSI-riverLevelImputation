@@ -101,6 +101,7 @@ class CATSI(nn.Module):
             nn.ReLU(),
             nn.Linear(2 * context_hidden, context_hidden),
         )
+        # self.context_rnn = RNNContext(4 * self.num_vars, context_hidden)
         self.context_rnn = RNNContext(3 * self.num_vars, context_hidden)
 
         self.initial_hidden = nn.Linear(2 * context_hidden, 2 * hidden_size)
@@ -122,6 +123,7 @@ class CATSI(nn.Module):
         masks = data["masks"]
         rain_forward = data["rain_forward"]
         rain_backward = data["rain_backward"]
+        rain = data["rain"]
 
         T_max = values.shape[1]  # time_stamp length
         padding_masks = torch.ones_like(values)
@@ -183,9 +185,13 @@ class CATSI(nn.Module):
 
         context_mlp = self.context_mlp(data_stats)  # multi-layer perceptron (statistical contexts)
         context_rnn = self.context_rnn(
-            torch.cat((x_complement, rain_forward, rain_backward), dim=-1),
+            torch.cat((x_complement, rain, rain_forward), dim=-1),
             seq_lengths,
         )
+        # context_rnn = self.context_rnn(
+        #     torch.cat((x_complement, rain, rain_forward, rain_backward), dim=-1),
+        #     seq_lengths,
+        # )
         context_vec = torch.cat((context_mlp, context_rnn), dim=1)
         h = self.initial_hidden(context_vec)
         c = self.initial_cell_state(h)

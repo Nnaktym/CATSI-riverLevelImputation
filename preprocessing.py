@@ -31,16 +31,32 @@ random_state = 0
 samples = {
     "train": [
         {"missing_rate": 0.1, "n_repeat": 100},
-        {"missing_rate": 0.2, "n_repeat": 10},
+        {"missing_rate": 0.2, "n_repeat": 100},
+        {"missing_rate": 0.3, "n_repeat": 100},
+        {"missing_rate": 0.4, "n_repeat": 100},
+        {"missing_rate": 0.5, "n_repeat": 100},
+        {"missing_rate": 0.6, "n_repeat": 100},
+        {"missing_rate": 0.7, "n_repeat": 100},
+        {"missing_rate": 0.8, "n_repeat": 100},
+        {"missing_rate": 0.9, "n_repeat": 100},
     ],
     "val": [
-        {"missing_rate": 0.1, "n_repeat": 10},
-        {"missing_rate": 0.2, "n_repeat": 1},
+        {"missing_rate": 0.1, "n_repeat": 100},
+        {"missing_rate": 0.2, "n_repeat": 100},
+        {"missing_rate": 0.3, "n_repeat": 100},
+        {"missing_rate": 0.4, "n_repeat": 100},
+        {"missing_rate": 0.5, "n_repeat": 100},
+        {"missing_rate": 0.6, "n_repeat": 100},
+        {"missing_rate": 0.7, "n_repeat": 100},
+        {"missing_rate": 0.8, "n_repeat": 100},
+        {"missing_rate": 0.9, "n_repeat": 100},
     ],
     "test": [
-        {"missing_rate": 0.2, "n_repeat": 1},
+        {"missing_rate": 0.5, "n_repeat": 1},
     ],
 }
+
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class CatsiDataset(object):
@@ -51,7 +67,7 @@ class CatsiDataset(object):
         rain_file_name: str,
         river_file_name: str,
         flood_duration_file_name: str,
-        diff: bool = False,
+        diff: bool = True,
         var_names: list[str] | None = None,
         rain_smoothing: int = 12,
         window_size: int = 20,
@@ -88,20 +104,28 @@ class CatsiDataset(object):
         self.saving_dir = Path(self.result_dir) / current_time
         self.saving_dir.mkdir(parents=True, exist_ok=True)
 
-        rain, river, self.flood_duration, self.var_names, self.timestamps = self.import_raw_data()
-        rain_forward = moving_average(rain, rain_smoothing, "forward")
-        rain_backward = moving_average(rain, rain_smoothing, "backward")
+        self.rain, river, self.flood_duration, self.var_names, self.timestamps = (
+            self.import_raw_data()
+        )
+        if self.diff:
+            self.river = river.diff()
+        else:
+            self.river = river
 
-        self.river_scalers = fit_scalers(river)
-        self.rain_scalers = fit_scalers(rain)
-        self.river_scaler = fit_scaler(river)
-        self.rain_scaler = fit_scaler(rain)
+        rain_forward = moving_average(self.rain, rain_smoothing, "forward")
+        rain_backward = moving_average(self.rain, rain_smoothing, "backward")
+
+        self.river_scalers = fit_scalers(self.river)
+        self.rain_scalers = fit_scalers(self.rain)
+        self.river_scaler = fit_scaler(self.river)
+        self.rain_scaler = fit_scaler(self.rain)
         self.rain_ma_scaler = fit_scaler(pd.concat([rain_forward, rain_backward], axis=0))
 
         # [TODO] diff の実装
         # river_level_df_diff = river_level_df.diff()  # 多分結束部分がうまくdiffできてない
 
-        self.river_data = self.river_scaler.transform(river)
+        self.river_data = self.river_scaler.transform(self.river)
+        self.rain_data = self.rain_scaler.transform(self.rain)
         self.rain_forward_data = self.rain_ma_scaler.transform(rain_forward)
         self.rain_backward_data = self.rain_ma_scaler.transform(rain_backward)
 
@@ -161,6 +185,11 @@ class CatsiDataset(object):
                 self.flood_duration[stage],
                 self.var_names,
             )
+            rain_flood_data = slice_data_for_flood(
+                pd.DataFrame(self.rain_data, index=self.timestamps, columns=self.var_names),
+                self.flood_duration[stage],
+                self.var_names,
+            )
             rain_flood_forward_data = slice_data_for_flood(
                 pd.DataFrame(self.rain_forward_data, index=self.timestamps, columns=self.var_names),
                 self.flood_duration[stage],
@@ -183,8 +212,11 @@ class CatsiDataset(object):
                 all_pts = []
                 for seed in seeds:
                     np.random.seed(seed)
-                    for river_item, rain_forward_item, rain_backward_item in zip(
-                        river_flood_data, rain_flood_forward_data, rain_flood_backward_data
+                    for river_item, rain_item, rain_forward_item, rain_backward_item in zip(
+                        river_flood_data,
+                        rain_flood_data,
+                        rain_flood_forward_data,
+                        rain_flood_backward_data,
                     ):
                         if len(river_item) < self.window_size:
                             continue
@@ -217,6 +249,7 @@ class CatsiDataset(object):
                                     i : i + self.window_size
                                 ].values,
                                 "pt_ground_truth": seq.values,
+                                "rain": rain_item[i : i + self.window_size].values,
                                 "rain_accumulation_forward": rain_forward_item[
                                     i : i + self.window_size
                                 ].values,
@@ -302,70 +335,32 @@ if __name__ == "__main__":
         dataset_dir=dataset_dir,
         result_dir=result_dir,
     )
-
-    # Save to pickle file
     with open(catsi_dataset.saving_dir / "catsi_dataset.pkl", "wb") as f:
         pickle.dump(catsi_dataset, f)
-
-    # start context aware imputation ====================
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    input = catsi_dataset.saving_dir
-    output = catsi_dataset.saving_dir
-    reload = False
-    # for debugging - - -
-    out_path = output
-    force_reload_raw = reload
-    train_data_path = input
-    epochs: int = 5
-    batch_size: int = 64
-    eval_batch_size: int = 64
-    eval_epoch: int = 1
-    record_imp_epoch: int = 50
-    early_stop: bool = False
-    hidden_size: int = 64
-    context_hidden: int = 32
-    num_vars = 6
-    learning_rate = 1e-3
-    # MAE (Mean Absolute Error)
-    # MRE (Mean Relative Error)
-    # nRMSD (normalized Root Mean Square Deviation)
 
     model = ContAwareTimeSeriesImp(
         var_names=catsi_dataset.var_names,
         train_data=catsi_dataset.dataset["train"],
         val_data=catsi_dataset.dataset["val"],
         window_size=catsi_dataset.window_size,
-        out_path=output,
-        device=device,
+        out_path=catsi_dataset.saving_dir,
+        device=DEVICE,
     )
     model.fit(
         epochs=1000,
         batch_size=32,
-        eval_batch_size=1000,
-        learning_rate=1e-2,
+        eval_batch_size=32,
+        learning_rate=1e-3,
         early_stop=True,
-        shuffle=True,
+        shuffle=False,
     )
-
-    # model.fit(
-    #     epochs=1000,
-    #     batch_size=32,
-    #     eval_batch_size=32,
-    #     learning_rate=1e-2,
-    #     early_stop=True,
-    # )
-    # model.fit(epochs=1000, batch_size=1, eval_batch_size=1)
-    # model.fit(epochs=10, batch_size=32, eval_batch_size=32)
-
-    # Save the trained model
-    model_save_path = Path(output) / "trained_model.pth"
+    model_save_path = Path(catsi_dataset.saving_dir) / "model.pth"
     torch.save(model.model.state_dict(), model_save_path)
     print(f"Trained model saved to {model_save_path}")
 
     # # Load the original data
-    # test_set = catsi_dataset["train"]
-    # test_set = catsi_dataset["val"]
     test_set = catsi_dataset.dataset["test"]
+    test_set = catsi_dataset.dataset["train"]
 
     imputation_results = model.impute_test_set(test_set, batch_size=1, ground_truth=True)
     print(imputation_results)
