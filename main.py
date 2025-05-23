@@ -417,7 +417,9 @@ def create_plot(
     return str(saving_path)
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Main function to train and evaluate the model."""
+    # Load configuration
     config = load_config()
     dataset_dir = config.get("PATH", "dataset_dir")
     result_dir = config.get("PATH", "result_dir")
@@ -434,6 +436,7 @@ if __name__ == "__main__":
     test_missing_rate = config.get("SAMPLE_GENERATION", "test_missing_rate")
     test_missing_rate = [float(x) for x in test_missing_rate.split(",")]
 
+    # Create dataset
     catsi_dataset = CatsiDataset(
         rain_file_name=rain_file_name,
         river_file_name=river_file_name,
@@ -451,6 +454,7 @@ if __name__ == "__main__":
     with open(catsi_dataset.saving_dir / "catsi_dataset.pkl", "wb") as f:
         pickle.dump(catsi_dataset, f)
 
+    # Training
     model = ContAwareTimeSeriesImp(
         var_names=catsi_dataset.var_names,
         train_data=catsi_dataset.dataset["train"],
@@ -471,7 +475,7 @@ if __name__ == "__main__":
     torch.save(model.model.state_dict(), model_save_path)
     logger.info(f"Trained model saved to {model_save_path}")
 
-    # Generate test dataset
+    # Evaluation
     scores = pd.DataFrame()
     for missing_rate in test_missing_rate:
         logger.info(f"Testing with missing rate: {missing_rate}")
@@ -488,7 +492,6 @@ if __name__ == "__main__":
             phase="testing",
             missing_rate=[missing_rate],
         )
-
         imputed = generate_imputation(model, test_catsi_dataset.dataset["test"])
         for var in test_catsi_dataset.var_names:
             logger.info(f"Testing variable: {var}")
@@ -532,3 +535,7 @@ if __name__ == "__main__":
                 saving_dir=catsi_dataset.saving_dir,
             )
             logger.info(f"Plot saved to {fig_path}")
+
+
+if __name__ == "__main__":
+    main()
