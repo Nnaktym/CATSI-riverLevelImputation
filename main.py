@@ -1,5 +1,6 @@
 """Script to train and evaluate the model."""
 
+import argparse
 import configparser
 import datetime
 import json
@@ -225,10 +226,10 @@ class CatsiDataset(object):
         return sequences
 
 
-def load_config() -> configparser.ConfigParser:
-    """Load configuration from config.ini file."""
+def load_config(config_path: str) -> configparser.ConfigParser:
+    """Load configuration from a specified config.ini file."""
     config = configparser.ConfigParser()
-    config.read("config.ini")
+    config.read(config_path)  # Use the provided file path
     return config
 
 
@@ -341,6 +342,7 @@ def antiderivative(
     act_original: pd.Series,
     comparison_table: pd.DataFrame,
 ) -> pd.DataFrame:
+    """Antiderivative for the original data."""
     pred_original = []
     for i in range(len(comparison_table)):
         row = comparison_table.iloc[i]
@@ -380,6 +382,7 @@ def add_linear_interpolation(
 def calculate_scores(
     comparison_table: pd.DataFrame,
 ) -> tuple[float, float]:
+    """Calculate RMSE for imputed and linear interpolation values."""
     data = comparison_table[comparison_table["val_mask"] == 1]
     catsi_rmse = mean_squared_error(data["actual"], data["pred"], squared=True)
     linear_rmse = mean_squared_error(data["actual"], data["linear_interp"], squared=True)
@@ -419,8 +422,11 @@ def create_plot(
 
 def main() -> None:
     """Main function to train and evaluate the model."""
-    # Load configuration
-    config = load_config()
+    parser = argparse.ArgumentParser(description="Train and evaluate the CATSI model.")
+    parser.add_argument("--config", type=str, required=True, help="Path to the configuration file.")
+    args = parser.parse_args()
+
+    config = load_config(args.config)
     dataset_dir = config.get("PATH", "dataset_dir")
     result_dir = config.get("PATH", "result_dir")
     rain_file_name = config.get("PATH", "rain_file_name")
