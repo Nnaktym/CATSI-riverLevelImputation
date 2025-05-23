@@ -1,5 +1,6 @@
 """Script to train and evaluate the model."""
 
+import configparser
 import datetime
 import json
 import logging
@@ -14,57 +15,10 @@ import torch
 from sklearn.metrics import mean_squared_error
 from sklearn.preprocessing import MinMaxScaler
 
-from catsi.main import ContAwareTimeSeriesImp
+from catsi.catsi import ContAwareTimeSeriesImp
 
 logger = logging.getLogger(__name__)
-
-dataset_dir = "data"
-result_dir = "result"
-
-n_repeat = 1
-rain_file_name = "rain_intensity.csv"
-river_file_name = "river_level.csv"
-flood_duration_file_name = "flood_duration.json"
-diff = True
-var_names = None
-rain_smoothing = 12
-window_size = 20
-random_state = 0
-samples = {
-    "train": [
-        {"missing_rate": 0.1, "n_repeat": n_repeat},
-        {"missing_rate": 0.2, "n_repeat": n_repeat},
-        {"missing_rate": 0.3, "n_repeat": n_repeat},
-        {"missing_rate": 0.4, "n_repeat": n_repeat},
-        {"missing_rate": 0.5, "n_repeat": n_repeat},
-        {"missing_rate": 0.6, "n_repeat": n_repeat},
-        {"missing_rate": 0.7, "n_repeat": n_repeat},
-        {"missing_rate": 0.8, "n_repeat": n_repeat},
-        {"missing_rate": 0.9, "n_repeat": n_repeat},
-    ],
-    "val": [
-        {"missing_rate": 0.1, "n_repeat": n_repeat},
-        {"missing_rate": 0.2, "n_repeat": n_repeat},
-        {"missing_rate": 0.3, "n_repeat": n_repeat},
-        {"missing_rate": 0.4, "n_repeat": n_repeat},
-        {"missing_rate": 0.5, "n_repeat": n_repeat},
-        {"missing_rate": 0.6, "n_repeat": n_repeat},
-        {"missing_rate": 0.7, "n_repeat": n_repeat},
-        {"missing_rate": 0.8, "n_repeat": n_repeat},
-        {"missing_rate": 0.9, "n_repeat": n_repeat},
-    ],
-    "test": [
-        {"missing_rate": 0.1, "n_repeat": 1},
-        # {"missing_rate": 0.2, "n_repeat": 1},
-        # {"missing_rate": 0.3, "n_repeat": 1},
-        # {"missing_rate": 0.4, "n_repeat": 1},
-        # {"missing_rate": 0.5, "n_repeat": 1},
-        # {"missing_rate": 0.6, "n_repeat": 1},
-        # {"missing_rate": 0.7, "n_repeat": 1},
-        # {"missing_rate": 0.8, "n_repeat": 1},
-        # {"missing_rate": 0.9, "n_repeat": 1},
-    ],
-}
+logger.setLevel(logging.INFO)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -77,24 +31,14 @@ class CatsiDataset(object):
         rain_file_name: str,
         river_file_name: str,
         flood_duration_file_name: str,
-        diff: bool = True,
+        missing_rate: list[float | Any],
+        phase: str,  # "training" or "testing"
+        n_repeat: int = 1,
         var_names: list[str] | None = None,
+        diff: bool = True,
         rain_smoothing: int = 12,
         window_size: int = 20,
         random_state: int = 0,
-        samples: dict[str, Any] = {
-            "train": [
-                {"missing_rate": 0.1, "n_repeat": 100},
-                {"missing_rate": 0.2, "n_repeat": 10},
-            ],
-            "val": [
-                {"missing_rate": 0.1, "n_repeat": 10},
-                {"missing_rate": 0.2, "n_repeat": 1},
-            ],
-            "test": [
-                {"missing_rate": 0.2, "n_repeat": 1},
-            ],
-        },
         dataset_dir: str = "data",
         result_dir: str = "result",
     ):
@@ -106,7 +50,6 @@ class CatsiDataset(object):
         self.rain_smoothing = rain_smoothing
         self.window_size = window_size
         self.random_state = random_state
-        self.samples = samples
 
         self.dataset_dir = dataset_dir
         self.result_dir = result_dir
@@ -121,7 +64,6 @@ class CatsiDataset(object):
             self.river = self.river_org.copy().diff()
         else:
             self.river = self.river_org.copy()
-
         rain_acc = moving_average(self.rain, rain_smoothing)
 
         self.river_scalers = fit_scalers(self.river)
@@ -134,7 +76,19 @@ class CatsiDataset(object):
         self.rain_data = self.rain_scaler.transform(self.rain)
         self.rain_acc_data = self.rain_ma_scaler.transform(rain_acc)
 
-        self.dataset = self.generate_catsi_dataset()
+        if phase == "training":
+            self.samples = {
+                "train": [{"missing_rate": x, "n_repeat": n_repeat} for x in missing_rate],
+                "val": [{"missing_rate": x, "n_repeat": n_repeat} for x in missing_rate],
+            }
+        elif phase == "testing":
+            assert len(missing_rate) == 1, "For testing, only one missing rate is allowed."
+            self.samples = {
+                "test": [{"missing_rate": x, "n_repeat": 1} for x in missing_rate],
+            }
+        else:
+            raise ValueError("Invalid phase. Use 'training' or 'testing'.")
+        self.dataset = self.generate_catsi_dataset(phase)
 
     def __len__(self) -> dict[str, int]:
         """Return the length of the dataset."""
@@ -180,13 +134,19 @@ class CatsiDataset(object):
 
     def generate_catsi_dataset(
         self,
+        phase: str,
     ) -> dict[str, Any]:
         """Generate sequencial data for CATSI"""
-        sequences: dict[str, Any] = {"train": [], "val": [], "test": []}
-        self.river_flood: dict[str, Any] = {}
+        sequences: dict[str, Any] = {}
+        if phase == "training":
+            stages = ["train", "val"]
+        elif phase == "testing":
+            stages = ["test"]
+        self.river_flood: dict[str, list[Any]] = {k: [] for k in stages}
         river_mean = np.nanmean(self.rain_data, axis=0)
         river_std = np.nanstd(self.rain_data, axis=0)
-        for stage in sequences.keys():
+        for stage in stages:
+            idx = 0
             logger.info(f"Generating {stage} dataset")
             river_flood_data = slice_data_for_flood(
                 pd.DataFrame(self.river_data, index=self.timestamps, columns=self.var_names),
@@ -210,7 +170,6 @@ class CatsiDataset(object):
                 logger.info(f"-------------- {sample_info}")
                 missing_rate, n_repeat = sample_info["missing_rate"], sample_info["n_repeat"]
                 seeds = np.arange(n_repeat) + self.random_state
-                idx = 0
                 all_sequence = []
                 for seed in seeds:
                     np.random.seed(seed)
@@ -266,6 +225,13 @@ class CatsiDataset(object):
         return sequences
 
 
+def load_config() -> configparser.ConfigParser:
+    """Load configuration from config.ini file."""
+    config = configparser.ConfigParser()
+    config.read("config.ini")
+    return config
+
+
 def slice_data_for_flood(
     data: pd.DataFrame,
     flood_duration: list[datetime.datetime, datetime.datetime],
@@ -316,19 +282,171 @@ def moving_average(
         raise ValueError("Invalid type. Use 'forward' or 'backward'.")
 
 
+def create_comparison_table(
+    imputation: pd.DataFrame,
+    ground_truth: pd.DataFrame,
+    var: str,
+) -> pd.DataFrame:
+    """Create comparison table for imputed and ground truth values."""
+    logger.info(f"Create comparison table for var: {var}")
+    actual = ground_truth[[var]].rename(columns={var: "actual"})
+    pred = imputation[imputation["var_name"] == var]
+    comparison_table = actual.copy()
+    for _, row in pred.iterrows():
+        idx = row["idx"]
+        assert var == row["var_name"]
+        imputed_value = row["imputation"]
+        comparison_table.loc[comparison_table.index[idx], ["pred"]] = imputed_value
+    comparison_table["observed_mask"] = 0
+    comparison_table.loc[comparison_table["pred"].isna(), ["observed_mask"]] = 1
+    comparison_table["val_mask"] = 0
+    comparison_table.loc[
+        (comparison_table["actual"].notna()) & (comparison_table["pred"].notna()),
+        ["val_mask"],
+    ] = 1
+    return comparison_table
+
+
+def generate_imputation(
+    model: ContAwareTimeSeriesImp,
+    test_set: list[dict[str, Any]],
+) -> pd.DataFrame:
+    """Get imputed result. Note that the the value is scaled to [0, 1]."""
+    imp_list = model.impute_test_set(test_set, batch_size=1, ground_truth=True)
+    imp = pd.concat(imp_list)
+    imp["idx"] = imp["sid"] + imp["tid"]
+    imp = imp[["idx", "var_name", "imputation"]].groupby(["idx", "var_name"], as_index=False).mean()
+    return imp
+
+
+def unscale(
+    data: pd.DataFrame,
+    scaler: MinMaxScaler,
+    cols: list[str] | None = None,
+) -> pd.DataFrame:
+    """Unscale the data using the scaler."""
+    if cols is None:
+        cols = data.columns
+    other_cols = [col for col in data.columns if col not in cols]
+    scaled_data = pd.DataFrame(
+        scaler.inverse_transform(data[cols]),
+        index=data.index,
+        columns=cols,
+    )
+    scaled_data = pd.concat([scaled_data, data[other_cols]], axis=1)
+    return scaled_data
+
+
+def antiderivative(
+    act_original: pd.Series,
+    comparison_table: pd.DataFrame,
+) -> pd.DataFrame:
+    pred_original = []
+    for i in range(len(comparison_table)):
+        row = comparison_table.iloc[i]
+        if i == 0:
+            prev_value = act_original.iloc[0]
+            pred_original.append(np.nan)
+            continue
+        imputed_value = row["pred"]
+        if pd.isna(imputed_value):
+            prev_value = act_original.iloc[i]
+            # pred_original.append(np.nan)
+            pred_original.append(prev_value)  # for visualization
+        else:
+            prev_value += imputed_value
+            pred_original.append(prev_value)
+    new_table = comparison_table.copy()
+    new_table.loc[:, ["pred"]] = pred_original
+    new_table.loc[:, ["actual"]] = act_original.values
+    new_table = new_table.iloc[1:]  # because the first value is nan
+    return new_table
+
+
+def add_linear_interpolation(
+    data: pd.DataFrame,
+) -> pd.DataFrame:
+    """Add linear interpolation for comparison"""
+    assert "actual" in data.columns
+    assert "pred" in data.columns
+    data.loc[:, ["linear_interp"]] = data["actual"].values
+    data.loc[data["observed_mask"] == 0, ["linear_interp"]] = np.nan
+    data.loc[:, ["linear_interp"]] = data["linear_interp"].interpolate(
+        method="linear", limit_direction="both"
+    )
+    return data
+
+
+def calculate_scores(
+    comparison_table: pd.DataFrame,
+) -> tuple[float, float]:
+    data = comparison_table[comparison_table["val_mask"] == 1]
+    catsi_rmse = mean_squared_error(data["actual"], data["pred"], squared=True)
+    linear_rmse = mean_squared_error(data["actual"], data["linear_interp"], squared=True)
+    return catsi_rmse, linear_rmse
+
+
+def create_plot(
+    data: pd.DataFrame,
+    var: str,
+    missing_rate: float,
+    saving_dir: str | Path,
+) -> str:
+    """Create plot for imputed and ground truth values."""
+    plt.figure(figsize=(8, 6))
+    plt.plot(data["pred"], label="CATSI imputation", color="red")
+    plt.plot(data["linear_interp"], label="linear interpolation", color="green")
+    plt.plot(data["actual"], label="ground truth", color="blue")
+    plt.title(f"missing rate: {missing_rate}")
+    plt.fill_between(
+        data.index,
+        data[["actual", "pred", "linear_interp"]].min(axis=1).min(),
+        data[["actual", "pred", "linear_interp"]].max(axis=1).max() * 1.1,
+        where=data["observed_mask"] == 0,
+        color="gray",
+        alpha=0.5,
+        edgecolor="none",
+        label="missing period",
+    )
+    plt.legend(loc="upper right")
+    plt.grid()
+    plt.tight_layout()
+    saving_path = Path(saving_dir) / f"{var}_{missing_rate}.png"
+    plt.savefig(saving_path)
+    plt.close()
+    return str(saving_path)
+
+
 if __name__ == "__main__":
+    config = load_config()
+    dataset_dir = config.get("PATH", "dataset_dir")
+    result_dir = config.get("PATH", "result_dir")
+    rain_file_name = config.get("PATH", "rain_file_name")
+    river_file_name = config.get("PATH", "river_file_name")
+    flood_duration_file_name = config.get("PATH", "flood_duration_file_name")
+    diff = config.getboolean("FEATURE_GENERATION", "diff")
+    rain_smoothing = config.getint("FEATURE_GENERATION", "rain_smoothing")
+    window_size = config.getint("FEATURE_GENERATION", "window_size")
+    n_repeat = config.getint("SAMPLE_GENERATION", "n_repeat")
+    random_state = config.getint("SAMPLE_GENERATION", "random_state")
+    train_missing_rate = config.get("SAMPLE_GENERATION", "train_missing_rate")
+    train_missing_rate = [float(x) for x in train_missing_rate.split(",")]
+    test_missing_rate = config.get("SAMPLE_GENERATION", "test_missing_rate")
+    test_missing_rate = [float(x) for x in test_missing_rate.split(",")]
+
     catsi_dataset = CatsiDataset(
         rain_file_name=rain_file_name,
         river_file_name=river_file_name,
         flood_duration_file_name=flood_duration_file_name,
         diff=diff,
-        var_names=var_names,
         rain_smoothing=rain_smoothing,
         window_size=window_size,
         random_state=random_state,
-        samples=samples,
         dataset_dir=dataset_dir,
         result_dir=result_dir,
+        phase="training",
+        n_repeat=n_repeat,
+        missing_rate=train_missing_rate,
     )
     with open(catsi_dataset.saving_dir / "catsi_dataset.pkl", "wb") as f:
         pickle.dump(catsi_dataset, f)
@@ -351,470 +469,66 @@ if __name__ == "__main__":
     )
     model_save_path = Path(catsi_dataset.saving_dir) / "model.pth"
     torch.save(model.model.state_dict(), model_save_path)
-    print(f"Trained model saved to {model_save_path}")
-    # result/20250522-182430/model.pth
+    logger.info(f"Trained model saved to {model_save_path}")
 
-    # # Load the original data
-    test_set = catsi_dataset.dataset["test"]
-    # test_set = catsi_dataset.dataset["train"]
-
-    imp = model.impute_test_set(test_set, batch_size=1, ground_truth=True)
-    # rmse = calc_imputation_mse_for_synthetic_nan(imp)
-    
-    def calc_imputation_mse_for_synthetic_nan(
-        imputation_results: list[pd.DataFrame],
-    ) -> pd.DataFrame:
-        """Calculate MSE for synthetic nan."""
-        imp = pd.concat(imputation_results).dropna()
-        imp["idx"] = imp["sid"] + imp["tid"]
-        imp = imp.groupby(["idx", "var_name"], as_index=False).mean()
-        rmse = mean_squared_error(
-            imp["ground_truth"], imp["imputation"], squared=False,
+    # Generate test dataset
+    scores = pd.DataFrame()
+    for missing_rate in test_missing_rate:
+        logger.info(f"Testing with missing rate: {missing_rate}")
+        test_catsi_dataset = CatsiDataset(
+            rain_file_name=rain_file_name,
+            river_file_name=river_file_name,
+            flood_duration_file_name=flood_duration_file_name,
+            diff=diff,
+            rain_smoothing=rain_smoothing,
+            window_size=window_size,
+            random_state=random_state,
+            dataset_dir=dataset_dir,
+            result_dir=result_dir,
+            phase="testing",
+            missing_rate=[missing_rate],
         )
-        return rmse
 
-    imp = model.impute_test_set(test_set, batch_size=1, ground_truth=True)
-    imp = pd.concat(imp)
-    imp["idx"] = imp["sid"] + imp["tid"]
-    imp = imp[["idx", "var_name", "imputation"]].groupby(["idx", "var_name"], as_index=False).mean()
-
-    self = catsi_dataset
-    
-    test_flood = self.river_flood["test"][0]
-    for var in self.var_names:
-        print(f"var: {var}")
-        scaler = self.river_scalers[var]
-        test_flood_var = test_flood[[var]]
-        imp_var = imp[imp["var_name"] == var]
-        for _, row in imp_var.iterrows():
-            idx = row["idx"]
-            assert var == row["var_name"]
-            imputed_value = row["imputation"]
-            test_flood_var.loc[test_flood_var.index[idx], ["imputation"]] = imputed_value
-        test_flood_var.loc[:, [var]] = scaler.inverse_transform(
-            test_flood_var[var].values.reshape(-1, 1),
-        )
-        test_flood_var.loc[:, ["imputation"]] = scaler.inverse_transform(
-            test_flood_var["imputation"].values.reshape(-1, 1),
-        )
-        if self.diff:
-            ground_truth = self.river_org.loc[test_flood_var.index, var]
-            estimated = []
-            for i in range(len(test_flood_var)):
-                row = test_flood_var.iloc[i]
-                # for i, row in test_flood_var.iterrows():
-                if i == 0:
-                    prev_value = ground_truth.iloc[0]
-                    estimated.append(np.nan)
-                    continue
-                imputed_value = row["imputation"]
-                if pd.isna(imputed_value):
-                    prev_value = ground_truth.iloc[i]
-                    estimated.append(np.nan)
-                else:
-                    prev_value += imputed_value
-                    estimated.append(prev_value)
-            test_flood_var.loc[:, ["estimated"]] = estimated
-            test_flood_var.to_csv("test_flood_var.csv")
-            # validated up to here
-                print(row)
-                temp = row[var]
-                temp = temp +
-            initial_values = self.river_org.loc[test_flood_var.index].shift(1)[var]
-
-        # imp_var = imp_gt[imp_gt["var_name"] == var]
-        # for _, row in imp_var.iterrows():
-        #     idx = row["idx"]
-        #     ground_truth = row["ground_truth"]
-        #     test_flood_var.loc[test_flood_var.index[idx], ["ground_truth"]] = ground_truth
-    
-    
-    test_flood = pd.DataFrame(
-        data=self.river_scaler.inverse_transform(test_flood),
-        index=test_flood.index,
-        columns=self.var_names,
-    )
-
-    test_flood_org = self.river_org.loc[test_flood.index]
-    initial_values = test_flood_org.shift(1)
-    
-    for colid, var_name in enumerate(self.var_names):
-        colid = 4
-        var_name = self.var_names[colid]
-        print(f"colid: {colid}, var_name: {var_name}")
-        var_test_flood = pd.DataFrame(test_flood[:, colid], columns=[var_name], index=self.river_flood["test"][0].index)
-        initial_values = self.
-
-    for sid, test_series in enumerate(test_set):
-        print(f"sid: {sid}")
-        o_mask = test_series["observed_mask"]
-        timestamp_dt = test_series["timestamps_dt"]
-        imputation = test_series["imputation"].detach().numpy().squeeze()
-        var_names = test_series["vars"]
-        unscaled_imp = catsi_dataset.river_scaler.inverse_transform(imputation)
-        
-        unscaled_imp[o_mask == 0] = np.nan
-        t = pd.DataFrame(unscaled_imp, columns=var_names, index=timestamp_dt)
-        
-        //convert positions of t where o_mask is 0 to NaN
-        t.loc[o_mask==0] = np.nan
-
-
-    # get averaged imputation result
-
-    # def parse_imputation_results(
-    #     self,
-    #     imputation_results: list[pd.DataFrame],
-    # ) -> pd.DataFrame:
-    #     """Process imputation results."""
-    #     imp = pd.concat(imputation_results).dropna()
-    #     imp["idx"] = imp["sid"] + imp["tid"]
-    #     self.imp = imp.groupby(["idx", "var_name"], as_index=False).mean()
-
-    #     imputation_results = pd.concat(imputation_results)
-    #     imputation_results["timestamps_dt"] = self.timestamps
-    #     imputation_results["analyte"] = imputation_results["var_name"]
-    #     imputation_results["imputation"] = imputation_results["imputed_value"]
-
-    #     return imputation_results
-
-    imputation_results = (
-        pd.DataFrame(imputation_results).groupby(["idx", "var_name"], as_index=False).mean()
-    )
-
-    catsi_dataset.timestamps
-    imputation_results["timestamps_dt"] = catsi_dataset.timestamps
-
-    rmse = mean_squared_error(
-        imputation_results["ground_truth"], imputation_results["imputation"], squared=False
-    )
-    print("RMSE:", rmse)
-
-    rmse = mean_squared_error(
-        imputation_results["ground_truth"], imputation_results["imputation"], squared=False
-    )
-
-    # create imputation result
-    # ground_truth = test_river_level[0]
-    for col_name in var_names:
-        col_id = var_names.index(col_name)
-        compare_all = pd.DataFrame()
-        for sid, imputation_result in enumerate(imputation_results):
-            print(f"sid: {sid}")
-            # print(imputation_result)
-            timestamp_dt = test_set[sid]["timestamps_dt"]
-            observed_mask = test_set[sid]["observed_mask"][:, col_id]
-            original_river_level = scaler.inverse_transform(test_set[sid]["pt_with_na_org"])[
-                :, col_id
-            ]
-            eval_mask = test_set[sid]["eval_mask"][:, col_id]
-            ground_truth = scaler.inverse_transform(test_set[sid]["pt_ground_truth"])[:, col_id]
-            compare = pd.DataFrame(
+        imputed = generate_imputation(model, test_catsi_dataset.dataset["test"])
+        for var in test_catsi_dataset.var_names:
+            logger.info(f"Testing variable: {var}")
+            comparison_table = create_comparison_table(
+                imputation=imputed,
+                ground_truth=test_catsi_dataset.river_flood["test"][0],
+                var=var,
+            )
+            comparison_table = unscale(
+                data=comparison_table,
+                scaler=test_catsi_dataset.river_scalers[var],
+                cols=["pred", "actual"],
+            )
+            if diff:
+                comparison_table = antiderivative(
+                    act_original=test_catsi_dataset.river_org.loc[
+                        comparison_table.index, var
+                    ].rename(
+                        "act_original",
+                    ),
+                    comparison_table=comparison_table,
+                )
+            comparison_table = add_linear_interpolation(
+                data=comparison_table,
+            )
+            catsi_rmse, linear_rmse = calculate_scores(comparison_table)
+            logger.info(f"catsi_rmse: {catsi_rmse}, linear_rmse: {linear_rmse}")
+            score = pd.DataFrame(
                 {
-                    "timestamps": timestamp_dt,
-                    "ground_truth": ground_truth,
-                    "ground_truth_with_synthetic_nan": original_river_level,
-                    "imputation": np.nan,
-                },
-                index=timestamp_dt,
+                    "var_name": [var],
+                    "missing_rate": [missing_rate],
+                    "catsi_rmse": [catsi_rmse],
+                    "linear_rmse": [linear_rmse],
+                }
             )
-            col_imputation_result = imputation_result[imputation_result["analyte"] == col_name]
-            for _, row in col_imputation_result.iterrows():
-                tid = row["tid"]
-                assert col_name == row["analyte"]
-                imputed_value = row["imputation"]
-                compare.loc[compare.index == timestamp_dt[tid], "imputation"] = imputed_value
-            imputation = np.zeros_like(test_set[sid]["pt_ground_truth"])
-            imputation[:, col_id] = compare["imputation"].values
-            compare["imputation"] = scaler.inverse_transform(imputation)[:, col_id]
-            compare["imputation"] = np.where(
-                compare["imputation"].isna(), compare["ground_truth"], compare["imputation"]
+            scores = pd.concat([scores, score], axis=0)
+            fig_path = create_plot(
+                data=comparison_table,
+                var=var,
+                missing_rate=missing_rate,
+                saving_dir=catsi_dataset.saving_dir,
             )
-
-            # compare_all["initial_value"] = river_level_df.loc[initial_timestamps, col_name].values
-            # compare_all["ground_truth"] = compare_all["initial_value"] + compare_all["ground_truth"]
-            if len(compare_all) == 0:
-                compare_all = compare
-            else:
-                compare = compare[~compare["timestamps"].isin(compare_all["timestamps"])]
-                compare_all = pd.concat([compare_all, compare], axis=0)
-
-        initial_timestamps = compare_all["timestamps"].values - pd.Timedelta(minutes=30)
-        converted_imputation = []
-        for k in range(len(compare_all)):
-            imputed = compare_all["imputation"].iloc[k]
-            # print(f"imputed: {imputed}")
-            initial = river_level_df.loc[initial_timestamps, col_name].iloc[k]
-            # print(f"initial: {initial}")
-            if pd.isna(initial):
-                print("initial is NaN")
-                converted = converted + imputed
-            else:
-                converted = initial + imputed
-            converted_imputation.append(converted)
-
-        compare_all["imputation"] = converted_imputation
-
-        converted_ground_truth = []
-        for k in range(len(compare_all)):
-            gt = compare_all["ground_truth"].iloc[k]
-            initial = river_level_df.loc[initial_timestamps, col_name].iloc[k]
-            # print(f"initial: {initial}")
-            if pd.isna(initial):
-                print("initial is NaN")
-                converted = converted + gt
-            else:
-                converted = initial + gt
-            converted_ground_truth.append(converted)
-        compare_all["ground_truth"] = converted_ground_truth
-
-        compare_all["ground_truth_with_synthetic_nan"] = np.where(
-            compare_all["ground_truth_with_synthetic_nan"].isna(),
-            np.nan,
-            compare_all["ground_truth"],
-        )
-
-        plt.figure(figsize=(15, 6))
-        plt.plot(
-            compare_all["imputation"],
-            label="Imputation",
-            color="red",
-            # linestyle="--",
-            # marker="x",
-        )
-        plt.plot(
-            compare_all["ground_truth"],
-            label="Ground Truth",
-            color="blue",
-            # linestyle="--",
-            # marker="o",
-        )
-        plt.plot(
-            compare_all["ground_truth_with_synthetic_nan"],
-            label="Ground Truth with Synthetic NaN",
-            color="green",
-            # linestyle="--",
-            marker="x",
-        )
-        plt.title("Imputation vs Ground Truth")
-        plt.xlabel("Time Stamps")
-        plt.ylabel("Values")
-        plt.legend()
-        plt.grid()
-        plt.savefig(f"{col_name}_imputation_vs_ground_truth.png")
-        plt.close()
-        print(f"Saved plot for {col_name} imputation vs ground truth.")
-
-    # checking peak performance
-    modified_test_river_level = test_river_level[0].copy()
-
-    # centre = modified_test_river_level.mean(axis=1).argmax()
-    # width = 2
-    # start = max(0, centre - width)
-    # end = min(modified_test_river_level.shape[0], centre + width)
-
-    # modified_test_river_level.iloc[start:end] = np.nan
-    test_river_level2 = [modified_test_river_level]
-
-    catsi_dataset2: dict[str, Any] = {"train": [], "val": [], "test": []}
-
-    # for key, river_data in zip(["test"], [test_river_level2]):
-    #     seeds_to_run = [seeds[0]] if key == "test" else seeds
-    #     idx = 0
-    #     all_pts = []
-    #     for seed in seeds_to_run:
-    #         np.random.seed(seed)
-    #         for item in river_data:
-    #             if len(item) < window_size:
-    #                 continue
-
-    #             dat = item[cols_to_include]
-    #             peak_nan_mask = np.zeros_like(dat, dtype=int)
-    #             for col in cols_to_include:
-    #                 dat_col = dat[col]
-    #                 peak_pos = dat_col.argmax()
-    #                 width = 2
-    #                 start = max(0, peak_pos - width) + 5
-    #                 end = min(dat.shape[0], peak_pos + width) + 5
-    #                 peak_nan_mask[start:end, cols_to_include.index(col)] = 1
-
-    #             original_nan_mask = dat.isna().astype(int).values
-
-    #             synthetic_nan_mask = (
-    #                 np.random.rand(len(dat), len(cols_to_include)) < missing_ratio
-    #             ).astype(int)
-    #             synthetic_nan_mask = np.maximum(synthetic_nan_mask.copy(), peak_nan_mask).astype(
-    #                 int
-    #             )
-    #             synthetic_nan_mask = synthetic_nan_mask.copy() * (1 - original_nan_mask)
-
-    #             dat_with_nan = dat.copy()
-    #             dat_with_nan[synthetic_nan_mask == 1] = np.nan
-    #             dat_interp = pd.DataFrame(dat).interpolate(method="linear", limit_direction="both")
-
-    #             rain_forward_dat = rain_forward_acc_df.loc[dat.index]
-    #             rain_backward_dat = rain_backward_acc_df.loc[dat.index]
-
-    #             for i in range(1, len(dat) - window_size + 1):
-    #                 seq = dat[i : i + window_size]
-    #                 seq_interp = dat_interp[i : i + window_size]
-    #                 seq_with_synthetic_nan = dat_with_nan[i : i + window_size]
-    #                 scaled_seq = scaler.transform(seq)
-    #                 scaled_seq_interp = scaler.transform(seq_interp)
-    #                 scaled_seq_with_synthetic_nan = scaler.transform(seq_with_synthetic_nan)
-
-    #                 rain_forward_seq = rain_forward_dat[i : i + window_size]
-    #                 rain_backward_seq = rain_backward_dat[i : i + window_size]
-    #                 scaled_rain_forward_seq = rain_scaler.transform(rain_forward_seq)
-    #                 scaled_rain_backward_seq = rain_scaler.transform(rain_backward_seq)
-
-    #                 if len(seq) < window_size:
-    #                     continue
-
-    #                 timestamps = seq.index.to_list()
-
-    #                 seq_original_nan_mask = original_nan_mask[i : i + window_size]
-    #                 seq_synthetic_nan_mask = synthetic_nan_mask[i : i + window_size]
-
-    #                 # if key == "test":
-    #                 #     multiplier = 2
-    #                 # else:
-    #                 #     multiplier = 1
-
-    #                 sequence_data = {
-    #                     "pt_with_na": scaled_seq_interp.copy(),
-    #                     "pt_with_na_org": scaled_seq_with_synthetic_nan.copy(),
-    #                     "pt_ground_truth": scaled_seq.copy(),
-    #                     "rain_accumulation": scaled_rain_forward_seq.copy(),
-    #                     "timestamps_dt": timestamps,
-    #                     "observed_mask": 1 - seq_original_nan_mask.copy(),
-    #                     # "observed_mask": 1
-    #                     # - np.maximum(seq_original_nan_mask.copy(), 1 - seq_synthetic_nan_mask.copy()),
-    #                     "eval_mask": seq_synthetic_nan_mask.copy(),
-    #                     "length": window_size,
-    #                     "sid": idx,
-    #                     "vars": cols_to_include,
-    #                     "time_stamps": np.arange(len(seq)),
-    #                     "river_scaler": scaler,
-    #                     "rain_scaler": rain_scaler,
-    #                 }
-    #                 all_pts.append(sequence_data)
-    #                 idx += 1
-    #     catsi_dataset2[key] = all_pts
-    #     print(f"{key} dataset size: {len(all_pts)}")
-
-    # test_set = catsi_dataset2["test"]
-
-    # imputation_results = model.impute_test_set(test_set, batch_size=1, ground_truth=True)
-    # print(imputation_results)
-
-    # # create imputation result
-    # # ground_truth = test_river_level[0]
-    # for col_name in var_names:
-    #     col_id = var_names.index(col_name)
-    #     compare_all = pd.DataFrame()
-    #     for sid, imputation_result in enumerate(imputation_results):
-    #         print(f"sid: {sid}")
-    #         # print(imputation_result)
-    #         timestamp_dt = test_set[sid]["timestamps_dt"]
-    #         observed_mask = test_set[sid]["observed_mask"][:, col_id]
-    #         original_river_level = scaler.inverse_transform(test_set[sid]["pt_with_na_org"])[
-    #             :, col_id
-    #         ]
-    #         eval_mask = test_set[sid]["eval_mask"][:, col_id]
-    #         ground_truth = scaler.inverse_transform(test_set[sid]["pt_ground_truth"])[:, col_id]
-    #         compare = pd.DataFrame(
-    #             {
-    #                 "timestamps": timestamp_dt,
-    #                 "ground_truth": ground_truth,
-    #                 "ground_truth_with_synthetic_nan": original_river_level,
-    #                 "imputation": np.nan,
-    #             },
-    #             index=timestamp_dt,
-    #         )
-    #         col_imputation_result = imputation_result[imputation_result["analyte"] == col_name]
-    #         for _, row in col_imputation_result.iterrows():
-    #             tid = row["tid"]
-    #             assert col_name == row["analyte"]
-    #             imputed_value = row["imputation"]
-    #             compare.loc[compare.index == timestamp_dt[tid], "imputation"] = imputed_value
-    #         imputation = np.zeros_like(test_set[sid]["pt_ground_truth"])
-    #         imputation[:, col_id] = compare["imputation"].values
-    #         compare["imputation"] = scaler.inverse_transform(imputation)[:, col_id]
-    #         compare["imputation"] = np.where(
-    #             compare["imputation"].isna(), compare["ground_truth"], compare["imputation"]
-    #         )
-
-    #         # compare_all["initial_value"] = river_level_df.loc[initial_timestamps, col_name].values
-    #         # compare_all["ground_truth"] = compare_all["initial_value"] + compare_all["ground_truth"]
-    #         if len(compare_all) == 0:
-    #             compare_all = compare
-    #         else:
-    #             compare = compare[~compare["timestamps"].isin(compare_all["timestamps"])]
-    #             compare_all = pd.concat([compare_all, compare], axis=0)
-
-    #     initial_timestamps = compare_all["timestamps"].values - pd.Timedelta(minutes=30)
-    #     converted_imputation = []
-    #     for k in range(len(compare_all)):
-    #         imputed = compare_all["imputation"].iloc[k]
-    #         # print(f"imputed: {imputed}")
-    #         initial = river_level_df.loc[initial_timestamps, col_name].iloc[k]
-    #         # print(f"initial: {initial}")
-    #         if pd.isna(initial):
-    #             print("initial is NaN")
-    #             converted = converted + imputed
-    #         else:
-    #             converted = initial + imputed
-    #         converted_imputation.append(converted)
-
-    #     compare_all["imputation"] = converted_imputation
-
-    #     converted_ground_truth = []
-    #     for k in range(len(compare_all)):
-    #         gt = compare_all["ground_truth"].iloc[k]
-    #         initial = river_level_df.loc[initial_timestamps, col_name].iloc[k]
-    #         # print(f"initial: {initial}")
-    #         if pd.isna(initial):
-    #             print("initial is NaN")
-    #             converted = converted + gt
-    #         else:
-    #             converted = initial + gt
-    #         converted_ground_truth.append(converted)
-    #     compare_all["ground_truth"] = converted_ground_truth
-
-    #     compare_all["ground_truth_with_synthetic_nan"] = np.where(
-    #         compare_all["ground_truth_with_synthetic_nan"].isna(),
-    #         np.nan,
-    #         compare_all["ground_truth"],
-    #     )
-
-    #     plt.figure(figsize=(15, 6))
-    #     plt.plot(
-    #         compare_all["imputation"],
-    #         label="Imputation",
-    #         color="red",
-    #         # linestyle="--",
-    #         # marker="x",
-    #     )
-    #     plt.plot(
-    #         compare_all["ground_truth"],
-    #         label="Ground Truth",
-    #         color="blue",
-    #         # linestyle="--",
-    #         # marker="o",
-    #     )
-    #     plt.plot(
-    #         compare_all["ground_truth_with_synthetic_nan"],
-    #         label="Ground Truth with Synthetic NaN",
-    #         color="green",
-    #         # linestyle="--",
-    #         marker="x",
-    #     )
-    #     plt.title("Imputation vs Ground Truth")
-    #     plt.xlabel("Time Stamps")
-    #     plt.ylabel("Values")
-    #     plt.legend()
-    #     plt.grid()
-    #     plt.savefig(f"{col_name}_imputation_vs_ground_truth.png")
-    #     plt.close()
-    #     print(f"Saved plot for {col_name} imputation vs ground truth.")
+            logger.info(f"Plot saved to {fig_path}")
