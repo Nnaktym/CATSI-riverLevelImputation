@@ -58,9 +58,13 @@ class CatsiDataset(object):
         self.saving_dir = Path(self.result_dir) / current_time
         self.saving_dir.mkdir(parents=True, exist_ok=True)
 
-        self.rain, self.river_org, self.flood_duration, self.var_names, self.timestamps = (
-            self.import_raw_data()
-        )
+        (
+            self.rain,
+            self.river_org,
+            self.flood_duration,
+            self.var_names,
+            self.timestamps,
+        ) = self.import_raw_data()
         if self.diff:
             self.river = self.river_org.copy().diff()
         else:
@@ -79,11 +83,17 @@ class CatsiDataset(object):
 
         if phase == "training":
             self.samples = {
-                "train": [{"missing_rate": x, "n_repeat": n_repeat} for x in missing_rate],
-                "val": [{"missing_rate": x, "n_repeat": n_repeat} for x in missing_rate],
+                "train": [
+                    {"missing_rate": x, "n_repeat": n_repeat} for x in missing_rate
+                ],
+                "val": [
+                    {"missing_rate": x, "n_repeat": n_repeat} for x in missing_rate
+                ],
             }
         elif phase == "testing":
-            assert len(missing_rate) == 1, "For testing, only one missing rate is allowed."
+            assert (
+                len(missing_rate) == 1
+            ), "For testing, only one missing rate is allowed."
             self.samples = {
                 "test": [{"missing_rate": x, "n_repeat": 1} for x in missing_rate],
             }
@@ -101,7 +111,9 @@ class CatsiDataset(object):
 
     def import_raw_data(
         self,
-    ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any], list[str], list[datetime.datetime]]:
+    ) -> tuple[
+        pd.DataFrame, pd.DataFrame, dict[str, Any], list[str], list[datetime.datetime]
+    ]:
         """Import raw rain, river, and flood duration data."""
         rain_df = pd.read_csv(
             Path(self.dataset_dir) / self.rain_file_name,
@@ -131,7 +143,13 @@ class CatsiDataset(object):
             "val",
             "test",
         ], "Flood duration keys incorrect"
-        return rain_df[var_names], river_df[var_names], flood_duration, var_names, timestamps
+        return (
+            rain_df[var_names],
+            river_df[var_names],
+            flood_duration,
+            var_names,
+            timestamps,
+        )
 
     def generate_catsi_dataset(
         self,
@@ -150,17 +168,23 @@ class CatsiDataset(object):
             idx = 0
             logger.info(f"Generating {stage} dataset")
             river_flood_data = slice_data_for_flood(
-                pd.DataFrame(self.river_data, index=self.timestamps, columns=self.var_names),
+                pd.DataFrame(
+                    self.river_data, index=self.timestamps, columns=self.var_names
+                ),
                 self.flood_duration[stage],
                 self.var_names,
             )
             rain_flood_data = slice_data_for_flood(
-                pd.DataFrame(self.rain_data, index=self.timestamps, columns=self.var_names),
+                pd.DataFrame(
+                    self.rain_data, index=self.timestamps, columns=self.var_names
+                ),
                 self.flood_duration[stage],
                 self.var_names,
             )
             rain_flood_acc_data = slice_data_for_flood(
-                pd.DataFrame(self.rain_acc_data, index=self.timestamps, columns=self.var_names),
+                pd.DataFrame(
+                    self.rain_acc_data, index=self.timestamps, columns=self.var_names
+                ),
                 self.flood_duration[stage],
                 self.var_names,
             )
@@ -169,7 +193,10 @@ class CatsiDataset(object):
             self.river_flood[stage] = river_flood_data
             for sample_info in self.samples[stage]:
                 logger.info(f"-------------- {sample_info}")
-                missing_rate, n_repeat = sample_info["missing_rate"], sample_info["n_repeat"]
+                missing_rate, n_repeat = (
+                    sample_info["missing_rate"],
+                    sample_info["n_repeat"],
+                )
                 seeds = np.arange(n_repeat) + self.random_state
                 all_sequence = []
                 for seed in seeds:
@@ -185,7 +212,8 @@ class CatsiDataset(object):
                         org_nan_mask = river_item.isna().astype(int).values
                         # 1: synthetically added nan
                         synth_nan_mask = (
-                            np.random.rand(len(river_item), len(self.var_names)) < missing_rate
+                            np.random.rand(len(river_item), len(self.var_names))
+                            < missing_rate
                         ).astype(int)
                         synth_nan_mask = synth_nan_mask * (1 - org_nan_mask)
                         # 1: non-nan (no need to impute)
@@ -202,15 +230,21 @@ class CatsiDataset(object):
                             if len(seq) < self.window_size:
                                 continue
                             sequence_data = {
-                                "pt_with_na": river_item_interp[i : i + self.window_size].values,
+                                "pt_with_na": river_item_interp[
+                                    i : i + self.window_size
+                                ].values,
                                 "pt_with_na_org": river_item_with_nan[
                                     i : i + self.window_size
                                 ].values,
                                 "pt_ground_truth": seq.values,
                                 "rain": rain_item[i : i + self.window_size].values,
-                                "rain_accumulation": rain_acc_item[i : i + self.window_size].values,
+                                "rain_accumulation": rain_acc_item[
+                                    i : i + self.window_size
+                                ].values,
                                 "timestamps_dt": seq.index.to_list(),
-                                "observed_mask": observed_mask[i : i + self.window_size],
+                                "observed_mask": observed_mask[
+                                    i : i + self.window_size
+                                ],
                                 "eval_mask": synth_nan_mask[i : i + self.window_size],
                                 "length": self.window_size,
                                 "sid": idx,
@@ -316,7 +350,11 @@ def generate_imputation(
     imp_list = model.impute_test_set(test_set, batch_size=1, ground_truth=True)
     imp = pd.concat(imp_list)
     imp["idx"] = imp["sid"] + imp["tid"]
-    imp = imp[["idx", "var_name", "imputation"]].groupby(["idx", "var_name"], as_index=False).mean()
+    imp = (
+        imp[["idx", "var_name", "imputation"]]
+        .groupby(["idx", "var_name"], as_index=False)
+        .mean()
+    )
     return imp
 
 
@@ -385,7 +423,9 @@ def calculate_scores(
     """Calculate RMSE for imputed and linear interpolation values."""
     data = comparison_table[comparison_table["val_mask"] == 1]
     catsi_rmse = mean_squared_error(data["actual"], data["pred"], squared=True)
-    linear_rmse = mean_squared_error(data["actual"], data["linear_interp"], squared=True)
+    linear_rmse = mean_squared_error(
+        data["actual"], data["linear_interp"], squared=True
+    )
     return catsi_rmse, linear_rmse
 
 
@@ -423,7 +463,9 @@ def create_plot(
 def main() -> None:
     """Main function to train and evaluate the model."""
     parser = argparse.ArgumentParser(description="Train and evaluate the CATSI model.")
-    parser.add_argument("--config", type=str, required=True, help="Path to the configuration file.")
+    parser.add_argument(
+        "--config", type=str, required=True, help="Path to the configuration file."
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -541,6 +583,12 @@ def main() -> None:
                 saving_dir=catsi_dataset.saving_dir,
             )
             logger.info(f"Plot saved to {fig_path}")
+    scores.to_csv(
+        catsi_dataset.saving_dir / "scores.csv",
+        index=False,
+    )
+    logger.info(f"Scores saved to {catsi_dataset.saving_dir / 'scores.csv'}")
+    logger.info("All done!")
 
 
 if __name__ == "__main__":
