@@ -28,3 +28,7 @@ To use this repository for river water level time series imputation, follow thes
 
 5. **Customize Configuration**  
   Modify `config.ini` to adjust model parameters, data paths, and other settings as needed.
+
+## Reference
+
+This repository references the original CATSI repository: https://github.com/hi-lab-hkbu/CATSI
